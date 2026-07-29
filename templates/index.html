@@ -21,6 +21,31 @@
         box-shadow: 0 14px 60px rgba(0,0,0,0.35);
       }
       h1 { margin-top: 0; }
+      .table-container {
+        overflow-x: auto;
+        margin-top: 16px;
+      }
+      table.trade-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+      }
+      table.trade-table th,
+      table.trade-table td {
+        padding: 10px 12px;
+        border: 1px solid rgba(255,255,255,0.14);
+        text-align: left;
+      }
+      table.trade-table th {
+        background: rgba(255,255,255,0.08);
+      }
+      .explanation {
+        margin-top: 24px;
+        padding: 18px;
+        background: rgba(255,255,255,0.06);
+        border-radius: 14px;
+        line-height: 1.6;
+      }
       .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); }
       label { display: block; margin-bottom: 6px; font-weight: 600; }
       input, select, button { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #5e7f99; }
@@ -82,6 +107,14 @@
         <button type="submit">Run Backtest</button>
       </form>
       <div id="results" class="result" style="display:none;"></div>
+      <div class="card explanation">
+        <h2>How the strategy works</h2>
+        <p><strong>Bullish signal:</strong> 50 EMA crosses above 100 EMA. This means the medium-term trend is turning up, so the system enters a long trade.</p>
+        <p><strong>Bearish signal:</strong> 50 EMA crosses below 100 EMA. This means the medium-term trend is turning down, so the system enters a short trade.</p>
+        <p><strong>Exit signal:</strong> 20 EMA crosses the 50 EMA. That means the short-term price momentum is reversing, so the strategy exits the current position.</p>
+        <p><strong>Trade sizing:</strong> The system uses the full available equity to calculate entry units, i.e. <code>entry_units = equity / entry_price</code>. This is a notional position size, and the engine assumes the entire capital is used per trade.</p>
+        <p><strong>Note:</strong> Actual broker margin and risk sizing are not simulated. The model uses the reported initial capital only for signal sizing and P&L calculation.</p>
+      </div>
     </div>
 
     <script>
@@ -123,10 +156,11 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
           });
-          const text = await response.text();
-          data = text ? JSON.parse(text) : { success: false, error: 'Empty response from server' };
+          data = await response.json();
+          console.log('Backtest response:', data);
         } catch (err) {
           data = { success: false, error: err.message || 'Request failed' };
+          console.error(err);
         }
 
         results.style.display = 'block';
@@ -134,19 +168,52 @@
           results.innerHTML = `<strong>Error:</strong> ${data.error || 'Unable to run backtest'}`;
           return;
         }
-        const summary = data.summary;
+        const summary = data.summary || {};
+        const trades = Array.isArray(data.trade_log) ? data.trade_log : [];
+        const hasTrades = trades.length > 0;
+        const tradeRows = trades.map((trade, index) => `
+            <tr>
+              <td>${index + 1}</td>
+              <td>${trade.entry_time || ''}</td>
+              <td>${trade.exit_time || ''}</td>
+              <td>${trade.direction || ''}</td>
+              <td>${trade.pnl != null ? trade.pnl : ''}</td>
+              <td>${trade.is_win ? 'Win' : 'Loss'}</td>
+            </tr>
+          `).join('');
+
         results.innerHTML = `
           <h3>${data.symbol_label || data.symbol} <span style="font-size:0.8em;color:#92d4ff;">(${data.symbol})</span></h3>
           <p class="muted">Market: ${data.market_label} • Data source: ${data.source}</p>
           <div class="metrics">
-            <div class="metric"><strong>Trades</strong><br>${summary.trades}</div>
-            <div class="metric"><strong>Wins</strong><br>${summary.wins}</div>
-            <div class="metric"><strong>Losses</strong><br>${summary.losses}</div>
-            <div class="metric"><strong>Accuracy</strong><br>${summary.accuracy}%</div>
-            <div class="metric"><strong>Total PnL</strong><br>${summary.total_pnl}</div>
-            <div class="metric"><strong>Ending Equity</strong><br>${summary.ending_equity}</div>
+            <div class="metric"><strong>Trades</strong><br>${summary.trades || 0}</div>
+            <div class="metric"><strong>Wins</strong><br>${summary.wins || 0}</div>
+            <div class="metric"><strong>Losses</strong><br>${summary.losses || 0}</div>
+            <div class="metric"><strong>Accuracy</strong><br>${summary.accuracy || 0}%</div>
+            <div class="metric"><strong>Total PnL</strong><br>${summary.total_pnl || 0}</div>
+            <div class="metric"><strong>Ending Equity</strong><br>${summary.ending_equity || 0}</div>
           </div>
           ${summary.brokerage_summary ? `<div class="section-title">Brokerage impact</div><div class="metrics">${summary.brokerage_summary.map(line => `<div class="metric">${line}</div>`).join('')}</div>` : ''}
+          ${hasTrades ? `
+            <div class="section-title">Trade log</div>
+            <div class="table-container">
+              <table class="trade-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Entry Time</th>
+                    <th>Exit Time</th>
+                    <th>Direction</th>
+                    <th>PnL</th>
+                    <th>Result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${tradeRows}
+                </tbody>
+              </table>
+            </div>
+          ` : '<p class="muted">No trades were generated for this range.</p>'}
         `;
       });
     </script>

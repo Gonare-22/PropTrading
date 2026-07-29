@@ -69,10 +69,52 @@ def normalize_date_range(start: str, end: str):
     if start_dt > end_dt:
         raise ValueError("Start date must be on or before the end date")
 
-    if start_dt == end_dt:
-        end_dt = end_dt + pd.Timedelta(days=1)
-
     return start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
+
+
+def fetch_yahoo_chunked(symbol: str, start: str, end: str, interval: str):
+    max_window = {
+        "1m": 7,
+        "2m": 7,
+        "5m": 60,
+        "15m": 60,
+        "30m": 60,
+        "60m": 730,
+        "1h": 730,
+    }.get(interval, 30)
+
+    start_dt = pd.Timestamp(start).normalize()
+    end_dt = pd.Timestamp(end).normalize()
+    frames = []
+    current_start = start_dt
+
+    while current_start <= end_dt:
+        chunk_end = min(current_start + pd.Timedelta(days=max_window - 1), end_dt)
+        chunk_start = current_start.strftime("%Y-%m-%d")
+        chunk_end_str = (chunk_end + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        chunk = yf.download(
+            symbol,
+            start=chunk_start,
+            end=chunk_end_str,
+            interval=interval,
+            auto_adjust=False,
+            progress=False,
+            prepost=False,
+            threads=False,
+        )
+        if chunk.empty:
+            return pd.DataFrame()
+        if isinstance(chunk.columns, pd.MultiIndex):
+            chunk.columns = [col[0] if isinstance(col, tuple) else col for col in chunk.columns]
+        frames.append(chunk)
+        current_start = chunk_end + pd.Timedelta(days=1)
+
+    if not frames:
+        return pd.DataFrame()
+
+    concatenated = pd.concat(frames).sort_index()
+    concatenated = concatenated[~concatenated.index.duplicated(keep='first')]
+    return concatenated
 
 
 def download_market_data(symbol: str, start: str, end: str, interval: str):
@@ -117,7 +159,14 @@ def download_market_data(symbol: str, start: str, end: str, interval: str):
         merged = merged[["Open", "High", "Low", "Close", "Volume"]]
         return merged.sort_index()
 
-    for attempt_interval in ([interval] if interval not in {"1m", "5m", "15m", "1h"} else [interval, "1d"]):
+    if interval in {"1m", "2m", "5m", "15m", "30m", "60m", "1h"}:
+        data = fetch_yahoo_chunked(resolved_symbol, start, end, interval)
+        if not data.empty:
+            data.index = pd.to_datetime(data.index)
+            data = data.sort_index().dropna(subset=["Close"])
+            return data
+
+    for attempt_interval in ([interval] if interval not in {"1m", "5m", "15m", "1h"} else ["1d"]):
         data = yf.download(
             resolved_symbol,
             start=start,
@@ -201,6 +250,15 @@ def run_strategy(df, initial_capital: float):
     trade_df = pd.DataFrame(trades)
     if not trade_df.empty:
         trade_df["is_win"] = trade_df["pnl"] > 0
+        trade_df["entry_time"] = pd.to_datetime(trade_df["entry_time"])
+        trade_df["exit_time"] = pd.to_datetime(trade_df["exit_time"])
+        trade_log = trade_df[["entry_time", "exit_time", "direction", "pnl", "is_win"]].copy()
+        trade_log["entry_time"] = trade_log["entry_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        trade_log["exit_time"] = trade_log["exit_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        trade_log = trade_log.to_dict("records")
+    else:
+        trade_log = []
+
     total_pnl = round(float(trade_df["pnl"].sum()), 2) if not trade_df.empty else 0.0
     brokerage_summary = []
     if not trade_df.empty:
@@ -220,7 +278,7 @@ def run_strategy(df, initial_capital: float):
         "initial_capital": round(float(initial_capital), 2),
         "brokerage_summary": brokerage_summary,
     }
-    return summary
+    return {"summary": summary, "trade_log": trade_log}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -272,11 +330,12 @@ async def run_backtest(request: Request):
 
         df = download_market_data(selected_symbol, start_date, end_date, interval)
         df = compute_emas(df)
-        summary = run_strategy(df, initial_capital)
+        result = run_strategy(df, initial_capital)
         return JSONResponse(
             {
                 "success": True,
-                "summary": summary,
+                "summary": result["summary"],
+                "trade_log": result["trade_log"],
                 "symbol": selected_symbol,
                 "symbol_label": get_symbol_label(selected_symbol, market),
                 "market": market,
