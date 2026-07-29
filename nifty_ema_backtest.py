@@ -9,6 +9,19 @@ DEFAULT_INITIAL_CAPITAL = 100000.0
 DEFAULT_EMA_SHORT = 20
 DEFAULT_EMA_MEDIUM = 50
 DEFAULT_EMA_LONG = 100
+BROKERAGE_RATES = {
+    "zerodha": 20.0,
+    "groww": 20.0,
+    "upstox": 20.0,
+    "angelone": 20.0,
+}
+DISPLAY_NAMES = {
+    "^NSEI": "Nifty 50",
+    "^NSEBANK": "Nifty Bank",
+    "^CNXIT": "Nifty IT",
+    "^CNXPHARMA": "Nifty Pharma",
+    "^CNX100": "Nifty 100",
+}
 
 
 def parse_args():
@@ -243,6 +256,14 @@ def run_strategy(data, initial_capital):
     return trade_df, df, equity
 
 
+def get_display_name(symbol):
+    return DISPLAY_NAMES.get(symbol, symbol)
+
+
+def calculate_brokerage(trades_count, rate_per_order):
+    return round((trades_count * 2) * rate_per_order, 2)
+
+
 def save_outputs(trade_df, df, symbol, start, end, interval, initial_capital, output_dir):
     output_dir = Path(output_dir or Path(__file__).resolve().parent)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -273,6 +294,7 @@ def save_outputs(trade_df, df, symbol, start, end, interval, initial_capital, ou
         drawdown = 0.0
 
     summary = {
+        "index_name": get_display_name(symbol),
         "symbol": symbol,
         "start_date": start,
         "end_date": end,
@@ -292,7 +314,16 @@ def save_outputs(trade_df, df, symbol, start, end, interval, initial_capital, ou
         "down_candles": int(df["down_candle"].sum()),
         "new_highs": int(df["new_high"].sum()),
         "new_lows": int(df["new_low"].sum()),
+        "brokerage_note": "Estimated using simple 20 per order assumption for intraday; actual charges vary by broker and plan",
     }
+
+    total_orders = int(len(trade_df)) * 2 if not trade_df.empty else 0
+    for broker, rate in BROKERAGE_RATES.items():
+        total_brokerage = calculate_brokerage(int(len(trade_df)), rate)
+        net_pnl_after_brokerage = round(total_pnl - total_brokerage, 2)
+        summary[f"{broker}_per_order_charge"] = rate
+        summary[f"{broker}_total_brokerage"] = round(total_brokerage, 2)
+        summary[f"{broker}_net_pnl_after_brokerage"] = net_pnl_after_brokerage
 
     summary_path = output_dir / f"{symbol.replace('/', '_')}_ema_summary.txt"
     with summary_path.open("w", encoding="utf-8") as fh:

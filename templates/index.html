@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EMA Strategy Backtest UI</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background: linear-gradient(135deg, #07111f, #183a5b);
+        color: #f4f7fb;
+        margin: 0;
+        padding: 24px;
+      }
+      .card {
+        max-width: 980px;
+        margin: 0 auto;
+        background: rgba(255,255,255,0.08);
+        padding: 24px;
+        border-radius: 18px;
+        box-shadow: 0 14px 60px rgba(0,0,0,0.35);
+      }
+      h1 { margin-top: 0; }
+      .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); }
+      label { display: block; margin-bottom: 6px; font-weight: 600; }
+      input, select, button { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #5e7f99; }
+      button { background: linear-gradient(135deg,#27ae60,#2ecc71); color: white; font-weight: 700; cursor: pointer; margin-top: 8px; }
+      .result { margin-top: 20px; padding: 16px; border-radius: 12px; background: rgba(0,0,0,0.18); }
+      .metrics { display: grid; grid-template-columns: repeat(auto-fit,minmax(140px,1fr)); gap: 12px; margin-top: 12px; }
+      .metric { background: linear-gradient(135deg, rgba(255,255,255,0.18), rgba(255,255,255,0.08)); padding: 18px; border-radius: 14px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); }
+      .metric strong { color: #dffafd; }
+      .section-title { margin-top: 24px; color: #c4e9ff; }
+      .error { color: #ff6b6b; font-weight: 700; }
+      .muted { color: #bcd2e8; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>EMA 20/50/100 Strategy Backtest</h1>
+      <p class="muted">Dynamic backend-driven backtest for Indian, US, and Forex markets.</p>
+      <form id="backtestForm">
+        <div class="grid">
+          <div>
+            <label>Market</label>
+            <select id="market" name="market">
+              <option value="india">India</option>
+              <option value="us">US</option>
+              <option value="forex">Forex</option>
+            </select>
+          </div>
+          <div>
+            <label>Symbol</label>
+            <select id="symbol" name="symbol"></select>
+          </div>
+          <div>
+            <label>Custom Symbol</label>
+            <input type="text" id="custom_symbol" name="custom_symbol" placeholder="Enter custom symbol or leave blank" />
+          </div>
+          <div>
+            <label>Start Date</label>
+            <input type="date" id="start_date" name="start_date" value="2026-07-20" />
+          </div>
+          <div>
+            <label>End Date</label>
+            <input type="date" id="end_date" name="end_date" value="2026-07-25" />
+          </div>
+          <div>
+            <label>Interval</label>
+            <select id="interval" name="interval">
+              <option value="1m">1 Minute</option>
+              <option value="5m">5 Minutes</option>
+              <option value="15m">15 Minutes</option>
+              <option value="1h">1 Hour</option>
+              <option value="1d">1 Day</option>
+            </select>
+          </div>
+          <div>
+            <label>Initial Capital</label>
+            <input type="number" id="initial_capital" name="initial_capital" value="100000" />
+          </div>
+        </div>
+        <button type="submit">Run Backtest</button>
+      </form>
+      <div id="results" class="result" style="display:none;"></div>
+    </div>
+
+    <script>
+      const marketOptions = {{ markets | tojson }};
+      const symbolSelect = document.getElementById('symbol');
+      const marketSelect = document.getElementById('market');
+      function populateSymbols() {
+        const market = marketSelect.value;
+        symbolSelect.innerHTML = '';
+        marketOptions[market].forEach(option => {
+          const opt = document.createElement('option');
+          opt.value = option.value;
+          opt.textContent = option.label;
+          symbolSelect.appendChild(opt);
+        });
+      }
+      marketSelect.addEventListener('change', populateSymbols);
+      populateSymbols();
+      document.getElementById('backtestForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const results = document.getElementById('results');
+        const formData = new FormData(e.target);
+        const startDate = formData.get('start_date');
+        const endDate = formData.get('end_date');
+
+        if (startDate && endDate && startDate > endDate) {
+          results.style.display = 'block';
+          results.innerHTML = '<strong>Error:</strong> Start date must be on or before the end date.';
+          return;
+        }
+
+        const payload = Object.fromEntries(formData.entries());
+        payload.initial_capital = Number(payload.initial_capital || 100000);
+
+        let data;
+        try {
+          const response = await fetch('/run-backtest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const text = await response.text();
+          data = text ? JSON.parse(text) : { success: false, error: 'Empty response from server' };
+        } catch (err) {
+          data = { success: false, error: err.message || 'Request failed' };
+        }
+
+        results.style.display = 'block';
+        if (!data.success) {
+          results.innerHTML = `<strong>Error:</strong> ${data.error || 'Unable to run backtest'}`;
+          return;
+        }
+        const summary = data.summary;
+        results.innerHTML = `
+          <h3>${data.symbol_label || data.symbol} <span style="font-size:0.8em;color:#92d4ff;">(${data.symbol})</span></h3>
+          <p class="muted">Market: ${data.market_label} • Data source: ${data.source}</p>
+          <div class="metrics">
+            <div class="metric"><strong>Trades</strong><br>${summary.trades}</div>
+            <div class="metric"><strong>Wins</strong><br>${summary.wins}</div>
+            <div class="metric"><strong>Losses</strong><br>${summary.losses}</div>
+            <div class="metric"><strong>Accuracy</strong><br>${summary.accuracy}%</div>
+            <div class="metric"><strong>Total PnL</strong><br>${summary.total_pnl}</div>
+            <div class="metric"><strong>Ending Equity</strong><br>${summary.ending_equity}</div>
+          </div>
+          ${summary.brokerage_summary ? `<div class="section-title">Brokerage impact</div><div class="metrics">${summary.brokerage_summary.map(line => `<div class="metric">${line}</div>`).join('')}</div>` : ''}
+        `;
+      });
+    </script>
+  </body>
+</html>
