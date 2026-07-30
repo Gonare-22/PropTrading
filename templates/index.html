@@ -103,6 +103,10 @@
             <label>Initial Capital</label>
             <input type="number" id="initial_capital" name="initial_capital" value="100000" />
           </div>
+          <div id="lot-size-group" style="display:none;">
+            <label>Forex Lot Size</label>
+            <input type="number" id="lot_size" name="lot_size" step="0.01" min="0.01" value="0.10" />
+          </div>
         </div>
         <button type="submit">Run Backtest</button>
       </form>
@@ -121,6 +125,7 @@
       const marketOptions = {{ markets | tojson }};
       const symbolSelect = document.getElementById('symbol');
       const marketSelect = document.getElementById('market');
+      const lotSizeGroup = document.getElementById('lot-size-group');
       function populateSymbols() {
         const market = marketSelect.value;
         symbolSelect.innerHTML = '';
@@ -130,6 +135,7 @@
           opt.textContent = option.label;
           symbolSelect.appendChild(opt);
         });
+        lotSizeGroup.style.display = market === 'forex' ? 'block' : 'none';
       }
       marketSelect.addEventListener('change', populateSymbols);
       populateSymbols();
@@ -177,7 +183,10 @@
               <td>${trade.entry_time || ''}</td>
               <td>${trade.exit_time || ''}</td>
               <td>${trade.direction || ''}</td>
-              <td>${trade.pnl != null ? trade.pnl : ''}</td>
+              <td>${trade.entry_price != null ? trade.entry_price.toFixed(6) : ''}</td>
+              <td>${trade.exit_price != null ? trade.exit_price.toFixed(6) : ''}</td>
+              <td>${trade.position_size != null ? trade.position_size.toFixed(4) : ''}</td>
+              <td>${trade.pnl != null ? trade.pnl.toFixed(4) : ''}</td>
               <td>${trade.is_win ? 'Win' : 'Loss'}</td>
             </tr>
           `).join('');
@@ -204,6 +213,9 @@
                     <th>Entry Time</th>
                     <th>Exit Time</th>
                     <th>Direction</th>
+                    <th>Entry Price</th>
+                    <th>Exit Price</th>
+                    <th>Position Size</th>
                     <th>PnL</th>
                     <th>Result</th>
                   </tr>

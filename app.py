@@ -40,6 +40,7 @@ BROKERAGE_RATES = {
     "Upstox": 20.0,
     "Angel One": 20.0,
 }
+DEFAULT_FOREX_LOT_SIZE = 0.10
 
 
 def get_symbol_label(symbol: str, market: str):
@@ -195,7 +196,7 @@ def compute_emas(df):
     return df
 
 
-def run_strategy(df, initial_capital: float):
+def run_strategy(df, initial_capital: float, market: str = "india", lot_size: float | None = None):
     df = df.copy()
     df["prev_ema20"] = df["ema20"].shift(1)
     df["prev_ema50"] = df["ema50"].shift(1)
@@ -207,52 +208,104 @@ def run_strategy(df, initial_capital: float):
     entry_time = None
     entry_direction = None
     entry_units = 0.0
+    pending_entry_direction = None
+    pending_exit_signal = False
+    use_lot_size = market == "forex"
+    lot_value = float(lot_size or DEFAULT_FOREX_LOT_SIZE)
 
     for idx, row in df.iterrows():
         close = float(row["Close"])
+        open_price = float(row.get("Open", close))
         prev20, prev50, prev100 = float(row["prev_ema20"]), float(row["prev_ema50"]), float(row["prev_ema100"])
         curr20, curr50, curr100 = float(row["ema20"]), float(row["ema50"]), float(row["ema100"])
 
         if position == 0:
-            if prev50 <= prev100 and curr50 > curr100:
-                position = 1
+            if pending_entry_direction is not None:
+                position = 1 if pending_entry_direction == "long" else -1
                 entry_time = idx
-                entry_price = close
-                entry_direction = "long"
-                entry_units = equity / entry_price
+                entry_price = open_price
+                entry_direction = pending_entry_direction
+                entry_units = (lot_value * 100000.0) if use_lot_size else (equity / entry_price)
+                pending_entry_direction = None
+            elif prev50 <= prev100 and curr50 > curr100:
+                pending_entry_direction = "long"
             elif prev50 >= prev100 and curr50 < curr100:
-                position = -1
-                entry_time = idx
-                entry_price = close
-                entry_direction = "short"
-                entry_units = equity / entry_price
+                pending_entry_direction = "short"
         elif position == 1:
-            if prev20 >= prev50 and curr20 < curr50:
-                exit_price = close
+            if pending_exit_signal:
+                exit_price = open_price
                 pnl = entry_units * (exit_price - entry_price)
                 equity += pnl
-                trades.append({"entry_time": entry_time, "exit_time": idx, "pnl": pnl, "direction": entry_direction})
+                trades.append(
+                    {
+                        "entry_time": entry_time,
+                        "exit_time": idx,
+                        "direction": entry_direction,
+                        "entry_price": entry_price,
+                        "exit_price": exit_price,
+                        "pnl": pnl,
+                        "position_size": entry_units,
+                        "lot_size": lot_value if use_lot_size else None,
+                    }
+                )
                 position = 0
+                entry_price = None
+                entry_time = None
+                entry_direction = None
+                entry_units = 0.0
+                pending_exit_signal = False
+            elif prev20 >= prev50 and curr20 < curr50:
+                pending_exit_signal = True
         elif position == -1:
-            if prev20 <= prev50 and curr20 > curr50:
-                exit_price = close
+            if pending_exit_signal:
+                exit_price = open_price
                 pnl = entry_units * (entry_price - exit_price)
                 equity += pnl
-                trades.append({"entry_time": entry_time, "exit_time": idx, "pnl": pnl, "direction": entry_direction})
+                trades.append(
+                    {
+                        "entry_time": entry_time,
+                        "exit_time": idx,
+                        "direction": entry_direction,
+                        "entry_price": entry_price,
+                        "exit_price": exit_price,
+                        "pnl": pnl,
+                        "position_size": entry_units,
+                        "lot_size": lot_value if use_lot_size else None,
+                    }
+                )
                 position = 0
+                entry_price = None
+                entry_time = None
+                entry_direction = None
+                entry_units = 0.0
+                pending_exit_signal = False
+            elif prev20 <= prev50 and curr20 > curr50:
+                pending_exit_signal = True
 
     if position != 0 and entry_time is not None:
-        last_close = float(df["Close"].iloc[-1])
-        pnl = entry_units * (last_close - entry_price) if entry_direction == "long" else entry_units * (entry_price - last_close)
+        last_open = float(df["Open"].iloc[-1]) if "Open" in df.columns else float(df["Close"].iloc[-1])
+        pnl = entry_units * (last_open - entry_price) if entry_direction == "long" else entry_units * (entry_price - last_open)
         equity += pnl
-        trades.append({"entry_time": entry_time, "exit_time": df.index[-1], "pnl": pnl, "direction": entry_direction})
+        trades.append(
+            {
+                "entry_time": entry_time,
+                "exit_time": df.index[-1],
+                "direction": entry_direction,
+                "entry_price": entry_price,
+                "exit_price": last_open,
+                "pnl": pnl,
+                "position_size": entry_units,
+                "lot_size": lot_value if use_lot_size else None,
+            }
+        )
 
     trade_df = pd.DataFrame(trades)
     if not trade_df.empty:
         trade_df["is_win"] = trade_df["pnl"] > 0
         trade_df["entry_time"] = pd.to_datetime(trade_df["entry_time"])
         trade_df["exit_time"] = pd.to_datetime(trade_df["exit_time"])
-        trade_log = trade_df[["entry_time", "exit_time", "direction", "pnl", "is_win"]].copy()
+        trade_df = trade_df.sort_values("entry_time")
+        trade_log = trade_df[["entry_time", "exit_time", "direction", "entry_price", "exit_price", "pnl", "position_size", "lot_size", "is_win"]].copy()
         trade_log["entry_time"] = trade_log["entry_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
         trade_log["exit_time"] = trade_log["exit_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
         trade_log = trade_log.to_dict("records")
@@ -298,6 +351,7 @@ async def parse_backtest_payload(request: Request):
             "end_date": payload.get("end_date", ""),
             "interval": payload.get("interval", "1m"),
             "initial_capital": payload.get("initial_capital", 100000),
+            "lot_size": payload.get("lot_size", DEFAULT_FOREX_LOT_SIZE),
         }
 
     form = await request.form()
@@ -309,6 +363,7 @@ async def parse_backtest_payload(request: Request):
         "end_date": form.get("end_date", ""),
         "interval": form.get("interval", "1m"),
         "initial_capital": form.get("initial_capital", 100000),
+        "lot_size": form.get("lot_size", DEFAULT_FOREX_LOT_SIZE),
     }
 
 
@@ -322,6 +377,7 @@ async def run_backtest(request: Request):
         end_date = str(payload.get("end_date") or "")
         interval = str(payload.get("interval") or "1m")
         initial_capital = float(payload.get("initial_capital") or 100000)
+        lot_size = float(payload.get("lot_size") or DEFAULT_FOREX_LOT_SIZE) if market == "forex" else None
 
         if not selected_symbol:
             raise ValueError("Please select a symbol")
@@ -330,7 +386,7 @@ async def run_backtest(request: Request):
 
         df = download_market_data(selected_symbol, start_date, end_date, interval)
         df = compute_emas(df)
-        result = run_strategy(df, initial_capital)
+        result = run_strategy(df, initial_capital, market=market, lot_size=lot_size)
         return JSONResponse(
             {
                 "success": True,
