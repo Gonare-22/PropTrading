@@ -139,6 +139,12 @@ def compute_emas(data, fast=20, medium=50, slow=100):
 
 
 def run_strategy(data, initial_capital):
+    """
+    Fixed backtest logic:
+    - Signal detected on bar N (EMA crossover at close)
+    - Trade executed on bar N+1 open (actual strike price)
+    - This avoids look-ahead bias and uses realistic execution prices
+    """
     df = data.copy()
     df["prev_ema20"] = df["ema20"].shift(1)
     df["prev_ema50"] = df["ema50"].shift(1)
@@ -150,10 +156,18 @@ def run_strategy(data, initial_capital):
     entry_price = None
     entry_direction = None
     entry_units = 0.0
+    entry_signal_bar = None
+    exit_signal_bar = None
     equity = float(initial_capital)
+    
+    pending_entry_direction = None
+    pending_exit_signal = False
 
-    for idx, row in df.iterrows():
+    df_list = list(df.iterrows())
+    
+    for i, (idx, row) in enumerate(df_list):
         current_close = float(row["Close"])
+        current_open = float(row.get("Open", current_close))
         prev_ema20 = float(row["prev_ema20"])
         prev_ema50 = float(row["prev_ema50"])
         prev_ema100 = float(row["prev_ema100"])
@@ -161,64 +175,67 @@ def run_strategy(data, initial_capital):
         curr_ema50 = float(row["ema50"])
         curr_ema100 = float(row["ema100"])
 
-        if position == 0:
-            if prev_ema50 <= prev_ema100 and curr_ema50 > curr_ema100:
-                position = 1
-                entry_time = idx
-                entry_price = current_close
-                entry_direction = "long"
-                entry_units = equity / entry_price
-            elif prev_ema50 >= prev_ema100 and curr_ema50 < curr_ema100:
-                position = -1
-                entry_time = idx
-                entry_price = current_close
-                entry_direction = "short"
-                entry_units = equity / entry_price
-        elif position == 1:
-            if prev_ema20 >= prev_ema50 and curr_ema20 < curr_ema50:
-                exit_price = current_close
+        # Execute pending entry at current bar's OPEN price
+        if position == 0 and pending_entry_direction is not None:
+            position = 1 if pending_entry_direction == "long" else -1
+            entry_time = idx
+            entry_price = current_open  # ACTUAL STRIKE PRICE at open
+            entry_direction = pending_entry_direction
+            entry_units = equity / entry_price
+            pending_entry_direction = None
+            
+        # Execute pending exit at current bar's OPEN price
+        elif position != 0 and pending_exit_signal:
+            exit_price = current_open  # ACTUAL STRIKE PRICE at open
+            if position == 1:
                 pnl_cash = entry_units * (exit_price - entry_price)
-                equity = equity + pnl_cash
-                trades.append(
-                    {
-                        "entry_time": entry_time,
-                        "exit_time": idx,
-                        "direction": entry_direction,
-                        "entry_price": entry_price,
-                        "exit_price": exit_price,
-                        "pnl": pnl_cash,
-                        "pnl_pct": (pnl_cash / initial_capital) * 100.0,
-                        "equity_after_trade": equity,
-                    }
-                )
-                position = 0
-                entry_time = None
-                entry_price = None
-                entry_direction = None
-                entry_units = 0.0
-        elif position == -1:
-            if prev_ema20 <= prev_ema50 and curr_ema20 > curr_ema50:
-                exit_price = current_close
+            else:
                 pnl_cash = entry_units * (entry_price - exit_price)
-                equity = equity + pnl_cash
-                trades.append(
-                    {
-                        "entry_time": entry_time,
-                        "exit_time": idx,
-                        "direction": entry_direction,
-                        "entry_price": entry_price,
-                        "exit_price": exit_price,
-                        "pnl": pnl_cash,
-                        "pnl_pct": (pnl_cash / initial_capital) * 100.0,
-                        "equity_after_trade": equity,
-                    }
-                )
-                position = 0
-                entry_time = None
-                entry_price = None
-                entry_direction = None
-                entry_units = 0.0
+            
+            equity = equity + pnl_cash
+            trades.append({
+                "entry_signal_bar": entry_signal_bar,
+                "entry_time": entry_time,
+                "exit_signal_bar": exit_signal_bar,
+                "exit_time": idx,
+                "direction": entry_direction,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "pnl": pnl_cash,
+                "pnl_pct": (pnl_cash / initial_capital) * 100.0,
+                "equity_after_trade": equity,
+            })
+            
+            position = 0
+            entry_time = None
+            entry_price = None
+            entry_direction = None
+            entry_units = 0.0
+            entry_signal_bar = None
+            exit_signal_bar = None
+            pending_exit_signal = False
 
+        # Detect entry signals at CLOSE of current bar
+        if position == 0 and pending_entry_direction is None:
+            if prev_ema50 <= prev_ema100 and curr_ema50 > curr_ema100:
+                pending_entry_direction = "long"
+                entry_signal_bar = idx
+            elif prev_ema50 >= prev_ema100 and curr_ema50 < curr_ema100:
+                pending_entry_direction = "short"
+                entry_signal_bar = idx
+                
+        # Detect exit signals at CLOSE of current bar
+        elif position == 1 and not pending_exit_signal:
+            if prev_ema20 >= prev_ema50 and curr_ema20 < curr_ema50:
+                pending_exit_signal = True
+                exit_signal_bar = idx
+                
+        elif position == -1 and not pending_exit_signal:
+            if prev_ema20 <= prev_ema50 and curr_ema20 > curr_ema50:
+                pending_exit_signal = True
+                exit_signal_bar = idx
+
+    # Handle open positions at end of data
     if position != 0 and entry_time is not None and entry_price is not None:
         last_close = float(df["Close"].iloc[-1])
         if entry_direction == "long":
@@ -226,27 +243,33 @@ def run_strategy(data, initial_capital):
         else:
             pnl_cash = entry_units * (entry_price - last_close)
         equity = equity + pnl_cash
-        trades.append(
-            {
-                "entry_time": entry_time,
-                "exit_time": df.index[-1],
-                "direction": entry_direction,
-                "entry_price": entry_price,
-                "exit_price": last_close,
-                "pnl": pnl_cash,
-                "pnl_pct": (pnl_cash / initial_capital) * 100.0,
-                "equity_after_trade": equity,
-            }
-        )
+        trades.append({
+            "entry_signal_bar": entry_signal_bar,
+            "entry_time": entry_time,
+            "exit_signal_bar": df.index[-1],
+            "exit_time": df.index[-1],
+            "direction": entry_direction,
+            "entry_price": entry_price,
+            "exit_price": last_close,
+            "pnl": pnl_cash,
+            "pnl_pct": (pnl_cash / initial_capital) * 100.0,
+            "equity_after_trade": equity,
+        })
 
     trade_df = pd.DataFrame(trades)
     if not trade_df.empty:
+        trade_df["entry_signal_bar"] = pd.to_datetime(trade_df["entry_signal_bar"])
         trade_df["entry_time"] = pd.to_datetime(trade_df["entry_time"])
+        trade_df["exit_signal_bar"] = pd.to_datetime(trade_df["exit_signal_bar"])
         trade_df["exit_time"] = pd.to_datetime(trade_df["exit_time"])
         trade_df = trade_df.sort_values("entry_time")
         trade_df["is_win"] = trade_df["pnl"] > 0
     else:
-        trade_df = pd.DataFrame(columns=["entry_time", "exit_time", "direction", "entry_price", "exit_price", "pnl", "pnl_pct", "equity_after_trade", "is_win"])
+        trade_df = pd.DataFrame(columns=[
+            "entry_signal_bar", "entry_time", "exit_signal_bar", "exit_time", 
+            "direction", "entry_price", "exit_price", "pnl", "pnl_pct", 
+            "equity_after_trade", "is_win"
+        ])
 
     df["up_candle"] = df["Close"].gt(df["Close"].shift(1)).astype(int)
     df["down_candle"] = df["Close"].lt(df["Close"].shift(1)).astype(int)

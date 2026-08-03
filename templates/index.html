@@ -29,16 +29,37 @@
         width: 100%;
         border-collapse: collapse;
         margin-top: 12px;
+        font-size: 13px;
       }
       table.trade-table th,
       table.trade-table td {
-        padding: 10px 12px;
+        padding: 8px 10px;
         border: 1px solid rgba(255,255,255,0.14);
         text-align: left;
       }
       table.trade-table th {
-        background: rgba(255,255,255,0.08);
+        background: rgba(255,255,255,0.12);
+        font-weight: 700;
+        position: sticky;
+        top: 0;
       }
+      table.trade-table tr.win-row {
+        background: rgba(46, 204, 113, 0.15);
+      }
+      table.trade-table tr.loss-row {
+        background: rgba(231, 76, 60, 0.15);
+      }
+      .pnl-positive { color: #2ecc71; font-weight: 700; }
+      .pnl-negative { color: #e74c3c; font-weight: 700; }
+      details { cursor: pointer; }
+      details summary { 
+        padding: 4px 8px; 
+        background: rgba(46,204,113,0.2); 
+        border-radius: 6px;
+        font-size: 11px;
+      }
+      details summary:hover { background: rgba(46,204,113,0.3); }
+      details[open] summary { background: rgba(46,204,113,0.4); }
       .explanation {
         margin-top: 24px;
         padding: 18px;
@@ -83,25 +104,39 @@
           </div>
           <div>
             <label>Start Date</label>
-            <input type="date" id="start_date" name="start_date" value="2026-07-20" />
+            <input type="date" id="start_date" name="start_date" value="2024-01-01" />
           </div>
           <div>
             <label>End Date</label>
-            <input type="date" id="end_date" name="end_date" value="2026-07-25" />
+            <input type="date" id="end_date" name="end_date" value="2024-12-31" />
           </div>
           <div>
             <label>Interval</label>
             <select id="interval" name="interval">
-              <option value="1m">1 Minute</option>
-              <option value="5m">5 Minutes</option>
-              <option value="15m">15 Minutes</option>
-              <option value="1h">1 Hour</option>
-              <option value="1d">1 Day</option>
+              <option value="1m">1 Minute (max 7 days)</option>
+              <option value="5m">5 Minutes (max 60 days)</option>
+              <option value="15m">15 Minutes (max 60 days)</option>
+              <option value="1h">1 Hour (max 2 years)</option>
+              <option value="1d" selected>1 Day (unlimited)</option>
             </select>
+          </div>
+          <div>
+            <label>Data Source</label>
+            <select id="data_source" name="data_source">
+              <option value="yahoo" selected>Yahoo Finance (Recommended - Free, works instantly)</option>
+              <option value="alpha_vantage">Alpha Vantage (Requires free API key)</option>
+              <option value="polygon">Polygon.io (Requires paid API key)</option>
+            </select>
+            <small style="color:#bcd2e8;display:block;margin-top:4px;">💡 Tip: Use 1d interval for date ranges beyond 60 days</small>
           </div>
           <div>
             <label>Initial Capital</label>
             <input type="number" id="initial_capital" name="initial_capital" value="100000" />
+          </div>
+          <div>
+            <label>Risk Per Trade (%) <span id="risk-preview" style="color:#2ecc71;font-weight:700;"></span></label>
+            <input type="number" id="risk_per_trade" name="risk_per_trade" value="100" min="1" max="100" step="0.5" />
+            <small style="color:#bcd2e8;display:block;margin-top:4px;">💡 Use 3-5% for conservative, 10-20% for moderate, 100% for full capital</small>
           </div>
           <div id="lot-size-group" style="display:none;">
             <label>Forex Lot Size</label>
@@ -112,11 +147,123 @@
       </form>
       <div id="results" class="result" style="display:none;"></div>
       <div class="card explanation">
+        <h2>📊 How to Manually Verify Trades</h2>
+        
+        <div style="background:rgba(46,204,113,0.1);padding:16px;border-radius:10px;margin-bottom:20px;">
+          <h3 style="margin-top:0;color:#2ecc71;">Step-by-Step Manual Testing Guide</h3>
+          
+          <p><strong>Step 1: Run a Backtest</strong></p>
+          <ul style="line-height:1.8;">
+            <li>Select: <strong>Nifty 50</strong></li>
+            <li>Date Range: <strong>2024-01-01 to 2024-12-31</strong></li>
+            <li>Interval: <strong>1 Day</strong></li>
+            <li>Risk: <strong>5%</strong> (for realistic results)</li>
+            <li>Click: <strong>Run Backtest</strong></li>
+          </ul>
+          
+          <p><strong>Step 2: Pick a Trade from the Table</strong></p>
+          <p>Example: Trade #1</p>
+          <ul style="line-height:1.8;">
+            <li><strong>Signal Time:</strong> 2024-01-15 (when EMAs crossed)</li>
+            <li><strong>Entry Time:</strong> 2024-01-16 (next day)</li>
+            <li><strong>Entry Price:</strong> 21,450.50 (actual execution price)</li>
+          </ul>
+          
+          <p><strong>Step 3: Verify on TradingView or Yahoo Finance</strong></p>
+          <ol style="line-height:1.8;">
+            <li>Go to <a href="https://finance.yahoo.com/quote/%5ENSEI/history" target="_blank" style="color:#2ecc71;">Yahoo Finance - Nifty 50 Historical Data</a></li>
+            <li>Find the <strong>Signal Date</strong> (e.g., Jan 15, 2024)</li>
+            <li>Check the <strong>Close price</strong> on that day</li>
+            <li>Find the <strong>Entry Date</strong> (next day - Jan 16, 2024)</li>
+            <li>Check the <strong>Open price</strong> on that day → This should match Entry Price!</li>
+          </ol>
+          
+          <p><strong>Step 4: Verify EMAs (Optional - Use TradingView)</strong></p>
+          <ol style="line-height:1.8;">
+            <li>Go to <a href="https://www.tradingview.com/chart/" target="_blank" style="color:#2ecc71;">TradingView</a></li>
+            <li>Search for <strong>NIFTY</strong></li>
+            <li>Add indicators: <strong>EMA 20, EMA 50, EMA 100</strong></li>
+            <li>Navigate to the <strong>Signal Date</strong></li>
+            <li>Check if EMA50 crossed EMA100 on that day</li>
+            <li>Verify trade was executed at <strong>next day's OPEN</strong></li>
+          </ol>
+        </div>
+        
+        <div style="background:rgba(52,152,219,0.1);padding:16px;border-radius:10px;margin-bottom:20px;">
+          <h3 style="margin-top:0;color:#3498db;">Understanding the Trade Table</h3>
+          
+          <table style="width:100%;border-collapse:collapse;margin-top:12px;">
+            <tr style="background:rgba(255,255,255,0.05);">
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);"><strong>Column</strong></td>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);"><strong>What It Means</strong></td>
+            </tr>
+            <tr>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Signal Time</td>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">When EMAs crossed (end of this bar)</td>
+            </tr>
+            <tr style="background:rgba(255,255,255,0.05);">
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Entry Time</td>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Next bar when trade executed (at OPEN price)</td>
+            </tr>
+            <tr>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Entry Price</td>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);"><strong>Actual strike price</strong> - The OPEN of Entry Time bar</td>
+            </tr>
+            <tr style="background:rgba(255,255,255,0.05);">
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Exit Signal Time</td>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">When exit signal triggered (EMA20 crossed EMA50)</td>
+            </tr>
+            <tr>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Exit Time</td>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Next bar when exit executed (at OPEN price)</td>
+            </tr>
+            <tr style="background:rgba(255,255,255,0.05);">
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Position Size</td>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Number of shares/units bought</td>
+            </tr>
+            <tr>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">PnL (₹)</td>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Position Size × (Exit Price - Entry Price)</td>
+            </tr>
+            <tr style="background:rgba(255,255,255,0.05);">
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Equity After</td>
+              <td style="padding:10px;border:1px solid rgba(255,255,255,0.1);">Running balance after this trade</td>
+            </tr>
+          </table>
+        </div>
+        
         <h2>How the strategy works</h2>
-        <p><strong>Bullish signal:</strong> 50 EMA crosses above 100 EMA. This means the medium-term trend is turning up, so the system enters a long trade.</p>
-        <p><strong>Bearish signal:</strong> 50 EMA crosses below 100 EMA. This means the medium-term trend is turning down, so the system enters a short trade.</p>
-        <p><strong>Exit signal:</strong> 20 EMA crosses the 50 EMA. That means the short-term price momentum is reversing, so the strategy exits the current position.</p>
-        <p><strong>Trade sizing:</strong> The system uses the full available equity to calculate entry units, i.e. <code>entry_units = equity / entry_price</code>. This is a notional position size, and the engine assumes the entire capital is used per trade.</p>
+        <p><strong>Entry signals:</strong></p>
+        <ul style="line-height:1.8;">
+          <li><strong>Bullish (LONG):</strong> EMA50 crosses above EMA100 → Enter at next bar OPEN</li>
+          <li><strong>Bearish (SHORT):</strong> EMA50 crosses below EMA100 → Enter at next bar OPEN</li>
+        </ul>
+        
+        <p><strong>Exit signals:</strong></p>
+        <ul style="line-height:1.8;">
+          <li><strong>Long exit:</strong> EMA20 crosses below EMA50 → Exit at next bar OPEN</li>
+          <li><strong>Short exit:</strong> EMA20 crosses above EMA50 → Exit at next bar OPEN</li>
+        </ul>
+        
+        <p><strong>Trade execution:</strong> Signal detected at bar N close → Trade executed at bar N+1 open. This uses the <em>actual strike price</em> (open price of next bar) rather than indicator values, avoiding look-ahead bias.</p>
+        <p><strong>Risk management:</strong> The "Risk Per Trade %" controls how much capital is used per trade:
+          <ul style="line-height:1.8;margin-top:8px;">
+            <li><strong>100%</strong> = Full capital (aggressive, higher returns/losses)</li>
+            <li><strong>20%</strong> = 20% of current equity per trade (moderate)</li>
+            <li><strong>5%</strong> = 5% of current equity per trade (conservative, realistic)</li>
+            <li><strong>3%</strong> = Professional risk management standard</li>
+          </ul>
+        </p>
+        <p><strong>Trade sizing:</strong> Position size = (Equity × Risk%) / Entry Price. This dynamically adjusts based on available capital.</p>
+        <p><strong>Trade log details:</strong></p>
+        <ul style="line-height:1.8;">
+          <li><strong>Signal Time:</strong> The timestamp when EMA crossover detected</li>
+          <li><strong>Entry/Exit Time:</strong> The next bar's timestamp where trade executed</li>
+          <li><strong>Entry/Exit Price:</strong> The actual strike price (open price) at execution</li>
+          <li><strong>PnL:</strong> Absolute profit/loss in currency</li>
+          <li><strong>PnL %:</strong> Profit/loss as percentage of initial capital</li>
+          <li><strong>Equity After:</strong> Running equity balance after trade closes</li>
+        </ul>
         <p><strong>Note:</strong> Actual broker margin and risk sizing are not simulated. The model uses the reported initial capital only for signal sizing and P&L calculation.</p>
       </div>
     </div>
@@ -139,6 +286,23 @@
       }
       marketSelect.addEventListener('change', populateSymbols);
       populateSymbols();
+      
+      // Update risk preview
+      const riskInput = document.getElementById('risk_per_trade');
+      const capitalInput = document.getElementById('initial_capital');
+      const riskPreview = document.getElementById('risk-preview');
+      
+      function updateRiskPreview() {
+        const capital = Number(capitalInput.value || 100000);
+        const risk = Number(riskInput.value || 100);
+        const tradeCapital = capital * (risk / 100);
+        riskPreview.textContent = `(₹${tradeCapital.toLocaleString()} per trade)`;
+      }
+      
+      riskInput.addEventListener('input', updateRiskPreview);
+      capitalInput.addEventListener('input', updateRiskPreview);
+      updateRiskPreview();
+      
       document.getElementById('backtestForm').addEventListener('submit', async (e) => {
         e.preventDefault();
         const results = document.getElementById('results');
@@ -148,12 +312,19 @@
 
         if (startDate && endDate && startDate > endDate) {
           results.style.display = 'block';
-          results.innerHTML = '<strong>Error:</strong> Start date must be on or before the end date.';
+          results.innerHTML = '<strong class="error">Error:</strong> Start date must be on or before the end date.';
           return;
         }
 
         const payload = Object.fromEntries(formData.entries());
         payload.initial_capital = Number(payload.initial_capital || 100000);
+        payload.risk_per_trade = Number(payload.risk_per_trade || 100);
+        payload.lot_size = Number(payload.lot_size || 0.10);
+        
+        console.log('Sending payload:', payload);  // Debug logging
+
+        results.style.display = 'block';
+        results.innerHTML = '<p>⏳ Running backtest, please wait...</p>';
 
         let data;
         try {
@@ -162,6 +333,9 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
           });
+          
+          console.log('Response status:', response.status);  // Debug logging
+          
           data = await response.json();
           console.log('Backtest response:', data);
         } catch (err) {
@@ -169,27 +343,45 @@
           console.error(err);
         }
 
-        results.style.display = 'block';
         if (!data.success) {
-          results.innerHTML = `<strong>Error:</strong> ${data.error || 'Unable to run backtest'}`;
+          results.innerHTML = `<strong class="error">Error:</strong> ${data.error || 'Unable to run backtest'}`;
           return;
         }
         const summary = data.summary || {};
         const trades = Array.isArray(data.trade_log) ? data.trade_log : [];
         const hasTrades = trades.length > 0;
-        const tradeRows = trades.map((trade, index) => `
-            <tr>
+        const tradeRows = trades.map((trade, index) => {
+          const isWin = trade.is_win;
+          const pnlClass = (trade.pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
+          const rowClass = isWin ? 'win-row' : 'loss-row';
+          
+          // Calculate the difference between signal close and entry price
+          const signalToEntryDiff = trade.signal_bar_close && trade.entry_price 
+            ? (trade.entry_price - trade.signal_bar_close).toFixed(2) 
+            : 'N/A';
+          
+          return `
+            <tr class="${rowClass}">
               <td>${index + 1}</td>
+              <td>${trade.entry_signal_bar || ''}</td>
               <td>${trade.entry_time || ''}</td>
+              <td>${trade.exit_signal_bar || ''}</td>
               <td>${trade.exit_time || ''}</td>
-              <td>${trade.direction || ''}</td>
-              <td>${trade.entry_price != null ? trade.entry_price.toFixed(6) : ''}</td>
-              <td>${trade.exit_price != null ? trade.exit_price.toFixed(6) : ''}</td>
-              <td>${trade.position_size != null ? trade.position_size.toFixed(4) : ''}</td>
-              <td>${trade.pnl != null ? trade.pnl.toFixed(4) : ''}</td>
-              <td>${trade.is_win ? 'Win' : 'Loss'}</td>
+              <td style="text-transform:uppercase;font-weight:700;">${trade.direction || ''}</td>
+              <td>
+                <strong>${trade.entry_price != null ? trade.entry_price.toFixed(2) : ''}</strong>
+              </td>
+              <td>
+                <strong>${trade.exit_price != null ? trade.exit_price.toFixed(2) : ''}</strong>
+              </td>
+              <td>${trade.position_size != null ? trade.position_size.toFixed(2) : ''}</td>
+              <td class="${pnlClass}"><strong>${trade.pnl != null ? trade.pnl.toFixed(2) : ''}</strong></td>
+              <td class="${pnlClass}">${trade.pnl_pct != null ? trade.pnl_pct.toFixed(2) + '%' : ''}</td>
+              <td>${trade.equity_after != null ? trade.equity_after.toFixed(2) : ''}</td>
+              <td style="font-weight:700;">${isWin ? '✓ Win' : '✗ Loss'}</td>
             </tr>
-          `).join('');
+          `;
+        }).join('');
 
         results.innerHTML = `
           <h3>${data.symbol_label || data.symbol} <span style="font-size:0.8em;color:#92d4ff;">(${data.symbol})</span></h3>
@@ -199,10 +391,11 @@
             <div class="metric"><strong>Wins</strong><br>${summary.wins || 0}</div>
             <div class="metric"><strong>Losses</strong><br>${summary.losses || 0}</div>
             <div class="metric"><strong>Accuracy</strong><br>${summary.accuracy || 0}%</div>
-            <div class="metric"><strong>Total PnL</strong><br>${summary.total_pnl || 0}</div>
+            <div class="metric"><strong>Total PnL</strong><br><span class="${(summary.total_pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative'}">${summary.total_pnl || 0}</span></div>
+            <div class="metric"><strong>Avg PnL</strong><br><span class="${(summary.avg_pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative'}">${summary.avg_pnl || 0}</span></div>
+            <div class="metric"><strong>Max Drawdown</strong><br>${summary.max_drawdown || 0}%</div>
             <div class="metric"><strong>Ending Equity</strong><br>${summary.ending_equity || 0}</div>
           </div>
-          ${summary.brokerage_summary ? `<div class="section-title">Brokerage impact</div><div class="metrics">${summary.brokerage_summary.map(line => `<div class="metric">${line}</div>`).join('')}</div>` : ''}
           ${hasTrades ? `
             <div class="section-title">Trade log</div>
             <div class="table-container">
@@ -210,13 +403,17 @@
                 <thead>
                   <tr>
                     <th>#</th>
+                    <th>Signal Time</th>
                     <th>Entry Time</th>
+                    <th>Exit Signal Time</th>
                     <th>Exit Time</th>
                     <th>Direction</th>
                     <th>Entry Price</th>
                     <th>Exit Price</th>
                     <th>Position Size</th>
-                    <th>PnL</th>
+                    <th>PnL (₹)</th>
+                    <th>PnL (%)</th>
+                    <th>Equity After</th>
                     <th>Result</th>
                   </tr>
                 </thead>
