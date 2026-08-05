@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, File, UploadFile, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -11,6 +11,7 @@ import yfinance as yf
 import requests
 import json
 import math
+import io
 
 app = FastAPI(title="EMA Strategy Backtest UI")
 base_dir = Path(__file__).resolve().parent
@@ -21,13 +22,13 @@ class BacktestRequest(BaseModel):
     market: Optional[str] = "india"
     symbol: Optional[str] = ""
     custom_symbol: Optional[str] = ""
-    start_date: str
-    end_date: str
+    start_date: str = ""
+    end_date: str = ""
     interval: Optional[str] = "1d"
     initial_capital: Optional[float] = 100000
     risk_per_trade: Optional[float] = 100.0  # Percentage of capital to risk per trade
     lot_size: Optional[float] = 0.10
-    data_source: Optional[str] = "yahoo"  # yahoo, alpha_vantage, polygon
+    data_source: Optional[str] = "yahoo"  # yahoo, alpha_vantage, polygon, upload
 
 DEFAULT_FOREX_LOT_SIZE = 0.10
 
@@ -66,11 +67,11 @@ MARKET_OPTIONS = {
         {"value": "EURINR=X", "label": "EUR/INR"},
         {"value": "GBPINR=X", "label": "GBP/INR"},
         {"value": "JPYINR=X", "label": "JPY/INR"},
-        {"value": "XAUUSD=X", "label": "Gold (XAU/USD)"},
-        {"value": "XAGUSD=X", "label": "Silver (XAG/USD)"},
+        {"value": "GLD", "label": "Gold (GLD ETF - Recommended)"},
+        {"value": "SLV", "label": "Silver (SLV ETF)"},
         {"value": "BTC-USD", "label": "Bitcoin (BTC/USD)"},
         {"value": "ETH-USD", "label": "Ethereum (ETH/USD)"},
-        {"value": "BTCXAU=X", "label": "BTC/Gold"},
+        {"value": "BTCXAU=X", "label": "BTC/Gold (Synthetic)"},
     ],
 }
 
@@ -90,9 +91,10 @@ def get_symbol_label(symbol: str, market: str):
 
 
 def resolve_yahoo_symbol(symbol: str):
+    """Map custom symbols to Yahoo Finance symbols"""
     mapping = {
-        "XAUUSD=X": "GC=F",
-        "XAGUSD=X": "SI=F",
+        "XAUUSD=X": "GC=F",  # Gold Futures
+        "XAGUSD=X": "SI=F",  # Silver Futures
     }
     return mapping.get(symbol, symbol)
 
@@ -155,12 +157,14 @@ def fetch_yahoo_chunked(symbol: str, start: str, end: str, interval: str):
     return concatenated
 
 
-def download_market_data(symbol: str, start: str, end: str, interval: str, data_source: str = "yahoo"):
+def download_market_data(symbol: str, start: str, end: str, interval: str, data_source: str = "yahoo", uploaded_df: pd.DataFrame = None):
     """
-    Download market data from multiple sources
-    data_source: 'yahoo', 'alpha_vantage', or 'polygon'
+    Download market data from multiple sources or use uploaded file
+    data_source: 'yahoo', 'alpha_vantage', 'polygon', or 'upload'
     """
-    if data_source == "yahoo":
+    if data_source == "upload" and uploaded_df is not None:
+        return uploaded_df
+    elif data_source == "yahoo":
         return download_yahoo_data(symbol, start, end, interval)
     elif data_source == "alpha_vantage":
         return download_alpha_vantage_data(symbol, start, end, interval)
@@ -168,6 +172,225 @@ def download_market_data(symbol: str, start: str, end: str, interval: str, data_
         return download_polygon_data(symbol, start, end, interval)
     else:
         return download_yahoo_data(symbol, start, end, interval)
+
+
+def process_uploaded_file(file_content: bytes, filename: str) -> pd.DataFrame:
+    """
+    Process uploaded CSV or Excel file
+    Handles large files efficiently (1GB+)
+    Supports Unix Epoch timestamps
+    Automatically downsamples very large datasets
+    """
+    print(f"Processing uploaded file: {filename}, size: {len(file_content) / 1024 / 1024:.2f} MB")
+    
+    try:
+        # Determine file type
+        if filename.endswith('.csv'):
+            # Use chunks for large CSV files
+            df = pd.read_csv(
+                io.BytesIO(file_content),
+                parse_dates=False,  # Don't auto-parse, we'll handle it
+                low_memory=False  # Avoids mixed type warnings
+            )
+        elif filename.endswith(('.xlsx', '.xls')):
+            # Excel files
+            df = pd.read_excel(io.BytesIO(file_content))
+        else:
+            raise ValueError("Unsupported file format. Please upload CSV or Excel (.xlsx, .xls)")
+        
+        print(f"Loaded {len(df)} rows from uploaded file")
+        
+        # IMPORTANT: Check if dataset is too large and downsample
+        MAX_ROWS = 500000  # Maximum 500K rows for performance
+        original_rows = len(df)
+        if len(df) > MAX_ROWS:
+            # Calculate sampling ratio
+            sample_ratio = MAX_ROWS / len(df)
+            print(f"⚠️ Dataset too large ({original_rows:,} rows). Downsampling to {MAX_ROWS:,} rows for performance...")
+            
+            # Use systematic sampling (every Nth row) to preserve time structure
+            step = int(1 / sample_ratio)
+            df = df.iloc[::step].reset_index(drop=True)
+            print(f"✓ Downsampled to {len(df):,} rows (every {step}th row)")
+        
+        # Find datetime column
+        datetime_col = None
+        for col in df.columns:
+            col_lower = col.lower()
+            if any(keyword in col_lower for keyword in ['date', 'time', 'datetime', 'timestamp', 'epoch']):
+                datetime_col = col
+                break
+        
+        if datetime_col is None:
+            raise ValueError("Could not find datetime column. Ensure your file has a 'Date', 'DateTime', 'Timestamp', or 'Epoch' column")
+        
+        print(f"Found datetime column: {datetime_col}")
+        
+        # Check if it's Unix Epoch timestamp (numeric values)
+        first_value = df[datetime_col].iloc[0]
+        is_unix_epoch = False
+        unit = 's'
+        
+        try:
+            # Check if it's a number (Unix timestamp)
+            if isinstance(first_value, (int, float, np.integer, np.floating)):
+                timestamp_val = float(first_value)
+                # Unix timestamps are typically 10 digits (seconds) or 13 digits (milliseconds)
+                if 1000000000 <= timestamp_val <= 9999999999:  # Seconds (2001-2286)
+                    is_unix_epoch = True
+                    unit = 's'
+                    print(f"Detected Unix Epoch timestamp in seconds")
+                elif 1000000000000 <= timestamp_val <= 9999999999999:  # Milliseconds
+                    is_unix_epoch = True
+                    unit = 'ms'
+                    print(f"Detected Unix Epoch timestamp in milliseconds")
+            elif isinstance(first_value, str) and first_value.replace('.', '', 1).isdigit():
+                # Handle string numeric values
+                timestamp_val = float(first_value)
+                if 1000000000 <= timestamp_val <= 9999999999:
+                    is_unix_epoch = True
+                    unit = 's'
+                    print(f"Detected Unix Epoch timestamp in seconds (from string)")
+                elif 1000000000000 <= timestamp_val <= 9999999999999:
+                    is_unix_epoch = True
+                    unit = 'ms'
+                    print(f"Detected Unix Epoch timestamp in milliseconds (from string)")
+        except:
+            pass
+        
+        # Convert datetime column
+        if is_unix_epoch:
+            # Convert Unix Epoch to datetime
+            df[datetime_col] = pd.to_datetime(df[datetime_col], unit=unit, errors='coerce')
+            print(f"Converted Unix Epoch ({unit}) to datetime")
+        else:
+            # Try to parse as regular datetime string
+            df[datetime_col] = pd.to_datetime(df[datetime_col], errors='coerce')
+            print(f"Parsed as standard datetime format")
+        
+        # Remove rows where datetime conversion failed
+        df = df.dropna(subset=[datetime_col])
+        
+        if df.empty:
+            raise ValueError("No valid datetime values found. Check your timestamp format.")
+        
+        # Find OHLC columns
+        column_mapping = {}
+        required_columns = ['Open', 'High', 'Low', 'Close']
+        
+        for col in df.columns:
+            col_lower = col.lower()
+            if 'open' in col_lower and 'Open' not in column_mapping:
+                column_mapping[col] = 'Open'
+            elif 'high' in col_lower and 'High' not in column_mapping:
+                column_mapping[col] = 'High'
+            elif 'low' in col_lower and 'Low' not in column_mapping:
+                column_mapping[col] = 'Low'
+            elif 'close' in col_lower and 'Close' not in column_mapping:
+                column_mapping[col] = 'Close'
+            elif 'volume' in col_lower and 'Volume' not in column_mapping:
+                column_mapping[col] = 'Volume'
+        
+        # Check if we have required columns
+        if 'Close' not in column_mapping.values():
+            raise ValueError("Could not find 'Close' price column. Ensure your file has OHLC data")
+        
+        print(f"Column mapping: {column_mapping}")
+        
+        # Rename columns
+        df = df.rename(columns=column_mapping)
+        
+        # Set datetime index
+        df = df.set_index(datetime_col)
+        df = df.sort_index()
+        
+        # Fill missing OHLC columns if not present
+        if 'Open' not in df.columns:
+            df['Open'] = df['Close']
+            print("'Open' not found, using Close price")
+        if 'High' not in df.columns:
+            df['High'] = df['Close']
+            print("'High' not found, using Close price")
+        if 'Low' not in df.columns:
+            df['Low'] = df['Close']
+            print("'Low' not found, using Close price")
+        if 'Volume' not in df.columns:
+            df['Volume'] = 0
+            print("'Volume' not found, setting to 0")
+        
+        # Select only required columns
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        
+        # Convert to numeric
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Remove any rows with NaN in Close
+        df = df.dropna(subset=['Close'])
+        
+        if df.empty:
+            raise ValueError("No valid data found after processing. Check your file format")
+        
+        print(f"✓ Successfully processed {len(df):,} rows")
+        if original_rows > len(df) and original_rows > MAX_ROWS:
+            print(f"  (downsampled from {original_rows:,} rows for performance)")
+        print(f"Date range: {df.index.min()} to {df.index.max()}")
+        
+        return df
+        
+    except Exception as e:
+        raise ValueError(f"Error processing uploaded file: {str(e)}")
+
+
+@app.post("/upload-backtest")
+async def upload_backtest(
+    file: UploadFile = File(...),
+    market: str = Form(...),
+    initial_capital: float = Form(...),
+    risk_per_trade: float = Form(...),
+    lot_size: float = Form(0.10)
+):
+    """Handle file upload and run backtest"""
+    try:
+        print(f"Received file upload: {file.filename}")
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Process uploaded file
+        df = process_uploaded_file(file_content, file.filename)
+        
+        # Compute EMAs
+        df = compute_emas(df)
+        print(f"Computed EMAs, starting backtest...")
+        
+        # Run strategy
+        result = run_strategy(df, initial_capital, market=market, risk_per_trade=risk_per_trade, lot_size=lot_size)
+        print(f"Backtest complete: {result['summary']['trades']} trades generated")
+        
+        # Currency based on market
+        currency = "₹" if market == "india" else "$"
+        currency_code = "INR" if market == "india" else "USD"
+        
+        return JSONResponse({
+            "success": True,
+            "summary": result["summary"],
+            "trade_log": result["trade_log"],
+            "symbol": file.filename,
+            "symbol_label": f"Uploaded: {file.filename}",
+            "market": market,
+            "market_label": market.capitalize(),
+            "currency": currency,
+            "currency_code": currency_code,
+            "source": f"Uploaded File ({len(df)} rows)",
+            "date_range": f"{df.index.min()} to {df.index.max()}"
+        })
+        
+    except Exception as exc:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"Error occurred: {error_detail}")
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=200)
 
 
 def download_yahoo_data(symbol: str, start: str, end: str, interval: str):
@@ -431,11 +654,16 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
     
     pending_entry_direction = None
     pending_exit_signal = False
-    use_lot_size = market == "forex"
-    lot_value = float(lot_size or DEFAULT_FOREX_LOT_SIZE)
+    
+    # Lot sizing ONLY for forex market
+    # For stocks/indices/uploaded data: always use simple position sizing
+    use_lot_size = (market == "forex")
+    lot_value = float(lot_size or DEFAULT_FOREX_LOT_SIZE) if market == "forex" else None
     
     # Convert risk percentage to decimal
     risk_multiplier = risk_per_trade / 100.0
+    
+    print(f"Strategy config: market={market}, use_lot_size={use_lot_size}, lot_value={lot_value}, risk={risk_per_trade}%, initial_capital={initial_capital}")
 
     df_list = list(df.iterrows())
     
@@ -455,16 +683,19 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
             # Calculate position size based on risk percentage
             trade_capital = equity * risk_multiplier
             
-            if use_lot_size:
-                # For forex: calculate lot size based on trade capital
-                # Standard lot = 100,000 units, Mini lot = 10,000, Micro = 1,000
-                # entry_units = number of units (not lots)
-                # With risk management: use proportional capital
-                max_units = lot_value * 100000.0  # Base lot size in units
-                entry_units = (trade_capital / entry_price) if risk_multiplier < 1.0 else max_units
+            if use_lot_size and lot_value is not None and market == "forex":
+                # For FOREX: lot_value is DIRECT units to trade
+                # lot_value = 0.10 means trade 0.10 BTC (not 0.10 lots)
+                # lot_value = 1 means trade 1 BTC
+                # Position size is directly the lot size (in units of the asset)
+                entry_units = lot_value
             else:
-                # For stocks/indices: simple position sizing
+                # For STOCKS/INDICES/UPLOADED DATA: position sizing based on capital
+                # entry_units = how many shares/units to buy
+                # Formula: units = (equity * risk%) / entry_price
                 entry_units = trade_capital / entry_price
+            
+            print(f"Trade {len(trades)+1}: equity={equity:.2f}, capital={trade_capital:.2f}, price={entry_price:.2f}, units={entry_units:.6f}, use_lot_size={use_lot_size}")
             
             pending_entry_direction = None
             
@@ -623,9 +854,19 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
         trade_log["entry_time"] = trade_log["entry_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
         trade_log["exit_signal_bar"] = trade_log["exit_signal_bar"].dt.strftime("%Y-%m-%d %H:%M:%S")
         trade_log["exit_time"] = trade_log["exit_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Limit trade log to prevent response size issues
+        # For large backtests, only return the most recent 1000 trades
+        max_trades_to_return = 1000
+        total_trades = len(trade_log)
+        if total_trades > max_trades_to_return:
+            trade_log = trade_log.tail(max_trades_to_return)
+            print(f"Trade log limited: showing last {max_trades_to_return} of {total_trades} trades")
+        
         trade_log = trade_log.to_dict("records")
     else:
         trade_log = []
+        total_trades = 0
 
     total_pnl = round(float(trade_df["pnl"].sum()), 2) if not trade_df.empty else 0.0
     avg_pnl = round(float(trade_df["pnl"].mean()), 2) if not trade_df.empty else 0.0
@@ -649,6 +890,8 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
         "max_drawdown": max_drawdown,
         "ending_equity": round(equity, 2),
         "initial_capital": round(float(initial_capital), 2),
+        "trades_displayed": len(trade_log) if trade_log else 0,
+        "trades_limited": total_trades > len(trade_log) if not trade_df.empty else False,
     }
     return {"summary": summary, "trade_log": trade_log}
 
@@ -715,39 +958,165 @@ async def test_risk_calculation():
     })
 
 
-@app.post("/run-backtest")
-async def run_backtest(req: BacktestRequest):
+def load_csv_data(file_content: bytes):
+    """Load and validate CSV data from uploaded file"""
     try:
-        print(f"Received request: {req.dict()}")  # Debug logging
+        # Try to read the CSV
+        df = pd.read_csv(io.BytesIO(file_content))
         
-        market = req.market or "india"
-        selected_symbol = str(req.custom_symbol or req.symbol or "").strip()
-        start_date = str(req.start_date or "")
-        end_date = str(req.end_date or "")
-        interval = str(req.interval or "1d")
-        initial_capital = float(req.initial_capital or 100000)
-        risk_per_trade = float(req.risk_per_trade or 100.0)
-        lot_size = float(req.lot_size or DEFAULT_FOREX_LOT_SIZE) if market == "forex" else None
-        data_source = req.data_source or "yahoo"
+        if df.empty:
+            raise ValueError("CSV file is empty")
         
-        print(f"Parsed values - Symbol: {selected_symbol}, Start: {start_date}, End: {end_date}, Interval: {interval}, Risk: {risk_per_trade}%")  # Debug logging
+        # Find datetime column
+        datetime_col = None
+        for candidate in ["datetime", "date", "time", "timestamp", "Date", "DateTime", "Timestamp"]:
+            if candidate in df.columns:
+                datetime_col = candidate
+                break
+        
+        if datetime_col is None:
+            # Try combining date and time columns
+            if "date" in df.columns and "time" in df.columns:
+                df["DateTime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str))
+                datetime_col = "DateTime"
+            else:
+                raise ValueError("CSV must contain a datetime column (Date, DateTime, or Timestamp)")
+        
+        # Find OHLC columns (case-insensitive)
+        col_map = {}
+        df_cols_lower = {col.lower(): col for col in df.columns}
+        
+        for required in ["open", "high", "low", "close"]:
+            if required in df_cols_lower:
+                col_map[required] = df_cols_lower[required]
+            elif required.capitalize() in df.columns:
+                col_map[required] = required.capitalize()
+            else:
+                raise ValueError(f"CSV must contain '{required}' column")
+        
+        # Create clean dataframe
+        clean_df = pd.DataFrame({
+            "Date": pd.to_datetime(df[datetime_col], errors="coerce"),
+            "Open": pd.to_numeric(df[col_map["open"]], errors="coerce"),
+            "High": pd.to_numeric(df[col_map["high"]], errors="coerce"),
+            "Low": pd.to_numeric(df[col_map["low"]], errors="coerce"),
+            "Close": pd.to_numeric(df[col_map["close"]], errors="coerce"),
+        })
+        
+        # Add volume if available
+        if "volume" in df_cols_lower:
+            clean_df["Volume"] = pd.to_numeric(df[df_cols_lower["volume"]], errors="coerce").fillna(0)
+        else:
+            clean_df["Volume"] = 0
+        
+        # Clean and validate
+        clean_df = clean_df.dropna(subset=["Date", "Open", "High", "Low", "Close"])
+        clean_df = clean_df.set_index("Date").sort_index()
+        
+        if clean_df.empty:
+            raise ValueError("No valid data rows found in CSV after cleaning")
+        
+        print(f"Loaded {len(clean_df)} rows from CSV, date range: {clean_df.index.min()} to {clean_df.index.max()}")
+        
+        return clean_df
+        
+    except Exception as e:
+        raise ValueError(f"Error reading CSV file: {str(e)}")
 
-        if not selected_symbol:
-            raise ValueError("Please select a symbol")
-        if not start_date or not end_date:
-            raise ValueError("Please provide start and end dates")
 
-        df = download_market_data(selected_symbol, start_date, end_date, interval, data_source)
-        print(f"Downloaded {len(df)} rows of data")  # Debug
+@app.post("/run-backtest")
+async def run_backtest(
+    request: Request,
+    market: Optional[str] = Form(None),
+    symbol: Optional[str] = Form(None),
+    custom_symbol: Optional[str] = Form(None),
+    start_date: Optional[str] = Form(None),
+    end_date: Optional[str] = Form(None),
+    interval: Optional[str] = Form(None),
+    initial_capital: Optional[float] = Form(None),
+    risk_per_trade: Optional[float] = Form(None),
+    lot_size: Optional[float] = Form(None),
+    data_source: Optional[str] = Form(None),
+    csv_file: Optional[UploadFile] = File(None),
+):
+    """
+    Backtest endpoint supporting both JSON and multipart form data (for file upload)
+    """
+    try:
+        # Check if this is a JSON request (no file upload)
+        content_type = request.headers.get("content-type", "")
+        
+        if "application/json" in content_type:
+            # Parse JSON body
+            body = await request.json()
+            market = body.get("market", "india")
+            selected_symbol = str(body.get("custom_symbol") or body.get("symbol") or "").strip()
+            start_date = str(body.get("start_date") or "")
+            end_date = str(body.get("end_date") or "")
+            interval = str(body.get("interval") or "1d")
+            initial_capital = float(body.get("initial_capital") or 100000)
+            risk_per_trade_val = float(body.get("risk_per_trade") or 100.0)
+            lot_size_val = float(body.get("lot_size") or DEFAULT_FOREX_LOT_SIZE) if market == "forex" else None
+            data_source_val = body.get("data_source") or "yahoo"
+            csv_file = None
+        else:
+            # Form data (with potential file upload)
+            market = market or "india"
+            selected_symbol = str(custom_symbol or symbol or "").strip()
+            start_date = start_date or ""
+            end_date = end_date or ""
+            interval = interval or "1d"
+            initial_capital = float(initial_capital or 100000)
+            risk_per_trade_val = float(risk_per_trade or 100.0)
+            lot_size_val = float(lot_size or DEFAULT_FOREX_LOT_SIZE) if market == "forex" else None
+            data_source_val = data_source or "yahoo"
+        
+        print(f"Received request - Market: {market}, Symbol: {selected_symbol}, Source: {data_source_val}, Risk: {risk_per_trade_val}%")
+        
+        # Handle file upload data source
+        if data_source_val == "upload":
+            if csv_file is None:
+                raise ValueError("Please upload a CSV or Excel file")
+            
+            # Read uploaded file
+            file_content = await csv_file.read()
+            
+            # Check file extension
+            filename = csv_file.filename.lower()
+            if filename.endswith('.csv'):
+                df = process_uploaded_file(file_content, csv_file.filename)
+            elif filename.endswith(('.xlsx', '.xls')):
+                df = process_uploaded_file(file_content, csv_file.filename)
+            else:
+                raise ValueError("Unsupported file format. Please upload CSV or Excel (.xlsx, .xls) file")
+            
+            selected_symbol = csv_file.filename  # Use filename as symbol
+            print(f"Processed uploaded file: {csv_file.filename}, rows: {len(df)}, date range: {df.index.min()} to {df.index.max()}")
+            
+        else:
+            # Use standard data sources
+            if not selected_symbol:
+                raise ValueError("Please select a symbol")
+            if not start_date or not end_date:
+                raise ValueError("Please provide start and end dates")
+            
+            df = download_market_data(selected_symbol, start_date, end_date, interval, data_source_val)
+        
+        print(f"Downloaded {len(df)} rows of data")
+        
+        # Add performance warning for very large datasets
+        if len(df) > 100000:
+            print(f"⚠️ Large dataset detected ({len(df):,} rows). Computing EMAs...")
         
         df = compute_emas(df)
-        print(f"Computed EMAs, starting backtest...")  # Debug
+        print(f"✓ Computed EMAs, starting backtest with {len(df):,} rows...")
         
-        result = run_strategy(df, initial_capital, market=market, lot_size=lot_size, risk_per_trade=risk_per_trade)
-        print(f"Backtest complete: {result['summary']['trades']} trades generated")  # Debug
+        result = run_strategy(df, initial_capital, market=market, lot_size=lot_size_val, risk_per_trade=risk_per_trade_val)
+        print(f"✓ Backtest complete: {result['summary']['trades']} trades generated")
         
         source_names = {
             "yahoo": "Yahoo Finance",
+            "upload": f"Uploaded CSV ({csv_file.filename if csv_file else 'file'})",
             "alpha_vantage": "Alpha Vantage",
             "polygon": "Polygon.io"
         }
@@ -761,7 +1130,11 @@ async def run_backtest(req: BacktestRequest):
                 "symbol_label": get_symbol_label(selected_symbol, market),
                 "market": market,
                 "market_label": market.capitalize(),
-                "source": source_names.get(data_source, "Yahoo Finance"),
+                "currency": "₹" if market == "india" else "$",
+                "currency_code": "INR" if market == "india" else "USD",
+                "source": source_names.get(data_source_val, "Custom Data"),
+                "date_range": f"{df.index.min().strftime('%Y-%m-%d %H:%M:%S')} to {df.index.max().strftime('%Y-%m-%d %H:%M:%S')}" if data_source_val == "upload" else None,
+                "rows_processed": len(df) if data_source_val == "upload" else None,
             }
         )
     except Exception as exc:
