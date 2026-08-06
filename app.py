@@ -28,15 +28,14 @@ class BacktestRequest(BaseModel):
     initial_capital: Optional[float] = 100000
     risk_per_trade: Optional[float] = 100.0  # Percentage of capital to risk per trade
     lot_size: Optional[float] = 0.10
-    data_source: Optional[str] = "yahoo"  # yahoo, alpha_vantage, polygon, upload
+    data_source: Optional[str] = "yahoo"  # yahoo, alpha_vantage, polygon, tweleve_data, upload
 
 DEFAULT_FOREX_LOT_SIZE = 0.10
 
 # API Keys (set these in environment variables for production)
 ALPHA_VANTAGE_KEY = "demo"  # Replace with your key or set env var
 POLYGON_API_KEY = "demo"    # Replace with your key or set env var
-# Tweleve Data API - KEY INVALID, disabled. Get key from: https://twelvedata.com/pricing
-# TWELEVE_DATA_API_KEY = "25753a3ca5dd493896ae4e6a9a755631add"
+TWELEVE_DATA_API_KEY = "25753a3ca5dd493896ae4e6a9a755631"  # Valid 12data API key
 
 MARKET_OPTIONS = {
     "india": [
@@ -69,11 +68,27 @@ MARKET_OPTIONS = {
         {"value": "EURINR=X", "label": "EUR/INR"},
         {"value": "GBPINR=X", "label": "GBP/INR"},
         {"value": "JPYINR=X", "label": "JPY/INR"},
-        {"value": "GLD", "label": "Gold (GLD ETF - Recommended)"},
-        {"value": "SLV", "label": "Silver (SLV ETF)"},
+        {"value": "XAU-USD", "label": "Gold (XAU/USD) - 12data"},
+        {"value": "XAG-USD", "label": "Silver (XAG/USD) - 12data"},
+        {"value": "GLD", "label": "Gold (GLD ETF - Yahoo)"},
+        {"value": "SLV", "label": "Silver (SLV ETF - Yahoo)"},
         {"value": "BTC-USD", "label": "Bitcoin (BTC/USD)"},
         {"value": "ETH-USD", "label": "Ethereum (ETH/USD)"},
         {"value": "BTCXAU=X", "label": "BTC/Gold (Synthetic)"},
+        # Binance Cryptocurrency pairs
+        {"value": "BTCUSDT", "label": "Bitcoin (BTC/USDT) - Binance", "source": "binance"},
+        {"value": "ETHUSDT", "label": "Ethereum (ETH/USDT) - Binance", "source": "binance"},
+        {"value": "BNBUSDT", "label": "Binance Coin (BNB/USDT) - Binance", "source": "binance"},
+        {"value": "XRPUSDT", "label": "Ripple (XRP/USDT) - Binance", "source": "binance"},
+        {"value": "ADAUSDT", "label": "Cardano (ADA/USDT) - Binance", "source": "binance"},
+        {"value": "DOGEUSDT", "label": "Dogecoin (DOGE/USDT) - Binance", "source": "binance"},
+        {"value": "SOLUSDT", "label": "Solana (SOL/USDT) - Binance", "source": "binance"},
+        {"value": "LTCUSDT", "label": "Litecoin (LTC/USDT) - Binance", "source": "binance"},
+        {"value": "BCHUSDT", "label": "Bitcoin Cash (BCH/USDT) - Binance", "source": "binance"},
+        {"value": "LINKUSDT", "label": "Chainlink (LINK/USDT) - Binance", "source": "binance"},
+        # Binance Commodities (TradFi)
+        {"value": "XAUUSDT", "label": "Gold (XAU/USDT) - Binance", "source": "binance"},
+        {"value": "XAGUSDT", "label": "Silver (XAG/USDT) - Binance", "source": "binance"},
     ],
 }
 
@@ -155,7 +170,7 @@ def fetch_yahoo_chunked(symbol: str, start: str, end: str, interval: str):
 def download_market_data(symbol: str, start: str, end: str, interval: str, data_source: str = "yahoo", uploaded_df: pd.DataFrame = None):
     """
     Download market data from multiple sources or use uploaded file
-    data_source: 'yahoo', 'alpha_vantage', 'polygon', or 'upload'
+    data_source: 'yahoo', 'alpha_vantage', 'polygon', 'tweleve_data', 'binance', or 'upload'
     """
     if data_source == "upload" and uploaded_df is not None:
         return uploaded_df
@@ -165,6 +180,10 @@ def download_market_data(symbol: str, start: str, end: str, interval: str, data_
         return download_alpha_vantage_data(symbol, start, end, interval)
     elif data_source == "polygon":
         return download_polygon_data(symbol, start, end, interval)
+    elif data_source == "tweleve_data":
+        return download_tweleve_data(symbol, start, end, interval)
+    elif data_source == "binance":
+        return download_binance_data(symbol, start, end, interval)
     else:
         return download_yahoo_data(symbol, start, end, interval)
 
@@ -612,6 +631,330 @@ def download_polygon_data(symbol: str, start: str, end: str, interval: str):
     return df
 
 
+def download_binance_data(symbol: str, start: str, end: str, interval: str):
+    """
+    Binance API download - Cryptocurrency (Spot) and commodity (Futures) data
+    Supports: 
+    - Cryptocurrencies via Spot API: BTC, ETH, XRP, ADA, DOGE, SOL, etc.
+    - Commodities via Futures API: Gold (XAU), Silver (XAG)
+    Symbol format: BTCUSDT, ETHUSDT, XAUUSDT (Futures), XAGUSDT (Futures), etc.
+    
+    Rate Limits:
+    - Spot API: 1200 requests per minute
+    - Futures API: 2400 requests per minute
+    - No API key required for public market data
+    
+    Binance APIs: 
+    - Spot: https://binance-docs.github.io/apidocs/spot/
+    - Futures: https://binance-docs.github.io/apidocs/futures/
+    """
+    start, end = normalize_date_range(start, end)
+    
+    # Validate symbol format and determine which API to use
+    valid_suffixes = ('USDT', 'BUSD', 'USDC', 'TUSD')
+    symbol_upper = symbol.upper()
+    
+    if not symbol_upper.endswith(valid_suffixes):
+        # Try to append USDT if not present
+        if symbol_upper in ['BTC', 'ETH', 'BNB', 'XRP', 'ADA', 'DOGE', 'SOL', 'LTC', 'BCH', 'XAU', 'XAG', 'LINK']:
+            symbol_upper = symbol_upper + 'USDT'
+        else:
+            raise ValueError(f"Invalid Binance symbol: {symbol}. Use format like BTCUSDT, XAUUSDT, etc.")
+    
+    # Determine if this is a commodity (use Futures API) or crypto (use Spot API)
+    is_commodity = symbol_upper.startswith(('XAU', 'XAG'))
+    
+    if is_commodity:
+        return _download_binance_futures_data(symbol_upper, start, end, interval)
+    else:
+        return _download_binance_spot_data(symbol_upper, start, end, interval)
+
+
+def _download_binance_spot_data(symbol: str, start: str, end: str, interval: str):
+    """Download cryptocurrency data from Binance Spot API"""
+    interval_map = {
+        "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+        "60m": "1h", "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w",
+    }
+    
+    binance_interval = interval_map.get(interval, "1d")
+    base_url = "https://api.binance.com/api/v3/klines"
+    
+    print(f"[Binance Spot] Fetching {symbol} from {start} to {end}, interval: {binance_interval}")
+    
+    try:
+        start_dt = pd.Timestamp(start)
+        end_dt = pd.Timestamp(end)
+        all_candles = []
+        current_start = start_dt
+        
+        while current_start < end_dt:
+            start_ms = int(current_start.timestamp() * 1000)
+            params = {
+                "symbol": symbol,
+                "interval": binance_interval,
+                "startTime": start_ms,
+                "limit": 1000
+            }
+            
+            print(f"[Binance Spot] Fetching chunk from {current_start.strftime('%Y-%m-%d %H:%M:%S')}")
+            response = requests.get(base_url, params=params, timeout=30)
+            
+            if response.status_code != 200:
+                error_text = response.text
+                print(f"[Binance Spot] Error {response.status_code}: {error_text}")
+                raise ValueError(f"Binance Spot API error: {response.status_code} - {error_text}")
+            
+            candles = response.json()
+            if not candles:
+                break
+            
+            all_candles.extend(candles)
+            last_candle_time = pd.Timestamp(int(candles[-1][0]) / 1000, unit='s')
+            current_start = last_candle_time + pd.Timedelta(minutes=1)
+            print(f"[Binance Spot] Got {len(candles)} candles")
+            
+            if last_candle_time >= end_dt:
+                break
+        
+        if not all_candles:
+            raise ValueError(f"No data found for {symbol}. Verify symbol exists on Binance Spot (e.g., BTCUSDT, ETHUSDT).")
+        
+        records = []
+        for candle in all_candles:
+            try:
+                timestamp = pd.Timestamp(int(candle[0]) / 1000, unit='s')
+                if timestamp > end_dt:
+                    break
+                records.append({
+                    "datetime": timestamp,
+                    "Open": float(candle[1]),
+                    "High": float(candle[2]),
+                    "Low": float(candle[3]),
+                    "Close": float(candle[4]),
+                    "Volume": float(candle[7])
+                })
+            except (IndexError, ValueError):
+                continue
+        
+        if not records:
+            raise ValueError("No valid candles after parsing")
+        
+        df = pd.DataFrame(records)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.set_index("datetime").sort_index()
+        df = df[~df.index.duplicated(keep='first')]
+        
+        print(f"[Binance Spot] ✓ Downloaded {len(df)} rows from {df.index.min()} to {df.index.max()}")
+        return df
+        
+    except requests.exceptions.Timeout:
+        raise ValueError("Binance API request timed out.")
+    except requests.exceptions.ConnectionError:
+        raise ValueError("Cannot connect to Binance API. Check internet connection.")
+    except Exception as e:
+        print(f"[Binance Spot] Error: {str(e)}")
+        raise ValueError(f"Binance Spot error: {str(e)}")
+
+
+def _download_binance_futures_data(symbol: str, start: str, end: str, interval: str):
+    """Download commodity data (Gold, Silver) from Binance Futures API"""
+    interval_map = {
+        "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+        "60m": "1h", "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w",
+    }
+    
+    binance_interval = interval_map.get(interval, "1d")
+    base_url = "https://fapi.binance.com/fapi/v1/klines"
+    
+    print(f"[Binance Futures] Fetching {symbol} from {start} to {end}, interval: {binance_interval}")
+    
+    try:
+        start_dt = pd.Timestamp(start)
+        end_dt = pd.Timestamp(end)
+        all_candles = []
+        current_start = start_dt
+        
+        while current_start < end_dt:
+            start_ms = int(current_start.timestamp() * 1000)
+            params = {
+                "symbol": symbol,
+                "interval": binance_interval,
+                "startTime": start_ms,
+                "limit": 1500
+            }
+            
+            print(f"[Binance Futures] Fetching chunk from {current_start.strftime('%Y-%m-%d %H:%M:%S')}")
+            response = requests.get(base_url, params=params, timeout=30)
+            
+            if response.status_code != 200:
+                error_text = response.text
+                print(f"[Binance Futures] Error {response.status_code}: {error_text}")
+                raise ValueError(f"Binance Futures API error: {response.status_code} - {error_text}")
+            
+            candles = response.json()
+            if not candles:
+                break
+            
+            all_candles.extend(candles)
+            last_candle_time = pd.Timestamp(int(candles[-1][0]) / 1000, unit='s')
+            current_start = last_candle_time + pd.Timedelta(minutes=1)
+            print(f"[Binance Futures] Got {len(candles)} candles")
+            
+            if last_candle_time >= end_dt:
+                break
+        
+        if not all_candles:
+            raise ValueError(f"No data found for {symbol}. Verify {symbol} is available on Binance Futures (e.g., XAUUSDT, XAGUSDT).")
+        
+        records = []
+        for candle in all_candles:
+            try:
+                timestamp = pd.Timestamp(int(candle[0]) / 1000, unit='s')
+                if timestamp > end_dt:
+                    break
+                records.append({
+                    "datetime": timestamp,
+                    "Open": float(candle[1]),
+                    "High": float(candle[2]),
+                    "Low": float(candle[3]),
+                    "Close": float(candle[4]),
+                    "Volume": float(candle[7])
+                })
+            except (IndexError, ValueError):
+                continue
+        
+        if not records:
+            raise ValueError("No valid candles after parsing")
+        
+        df = pd.DataFrame(records)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.set_index("datetime").sort_index()
+        df = df[~df.index.duplicated(keep='first')]
+        
+        print(f"[Binance Futures] ✓ Downloaded {len(df)} rows from {df.index.min()} to {df.index.max()}")
+        return df
+        
+    except requests.exceptions.Timeout:
+        raise ValueError("Binance Futures API request timed out.")
+    except requests.exceptions.ConnectionError:
+        raise ValueError("Cannot connect to Binance Futures API. Check internet connection.")
+    except Exception as e:
+        print(f"[Binance Futures] Error: {str(e)}")
+        raise ValueError(f"Binance Futures error: {str(e)}")
+
+
+def download_tweleve_data(symbol: str, start: str, end: str, interval: str):
+    """
+    Tweleve Data API download - real-time and historical market data
+    Supports: stocks, forex, crypto, commodities, indices
+    API Key: 25753a3ca5dd493896ae4e6a9a755631
+    """
+    start, end = normalize_date_range(start, end)
+    
+    # Map intervals to 12data format
+    interval_map = {
+        "1m": "1min",
+        "5m": "5min",
+        "15m": "15min",
+        "30m": "30min",
+        "60m": "60min",
+        "1h": "60min",
+        "1d": "1day",
+    }
+    
+    tweleve_interval = interval_map.get(interval, "1day")
+    
+    # Normalize symbol for 12data (e.g., BTC-USD -> BTC/USD, EURUSD -> EUR/USD)
+    original_symbol = symbol
+    if symbol.endswith("=X"):
+        # Yahoo forex format: convert to 12data format
+        symbol = symbol.replace("=X", "").replace("USD", "/USD")
+        if "/" not in symbol:
+            symbol = symbol[:3] + "/" + symbol[3:]
+    elif "-" in symbol and symbol.count("-") == 1:
+        # Yahoo format: convert dash to slash for crypto
+        symbol = symbol.replace("-", "/")
+    elif "/" not in symbol and len(symbol) >= 6:
+        # Convert forex pairs: EURUSD -> EUR/USD
+        symbol = symbol[:3] + "/" + symbol[3:]
+    
+    print(f"[12data] Converting {original_symbol} -> {symbol}")
+    print(f"[12data] Fetching {symbol} from {start} to {end}, interval: {tweleve_interval}")
+    
+    # Build API URL
+    url = "https://api.twelvedata.com/time_series"
+    params = {
+        "symbol": symbol,
+        "interval": tweleve_interval,
+        "start_date": start,
+        "end_date": end,
+        "format": "JSON",
+        "apikey": TWELEVE_DATA_API_KEY
+    }
+    
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        print(f"[12data] Response Status: {response.status_code}")
+        
+        if response.status_code != 200:
+            error_text = response.text
+            print(f"[12data] Error - Status {response.status_code}: {error_text}")
+            raise ValueError(f"12data API error: {response.status_code} - {error_text}")
+        
+        data_json = response.json()
+        print(f"[12data] Response Status: {data_json.get('status')}")
+        
+        # Check for API errors
+        if data_json.get("status") == "error":
+            error_msg = data_json.get('message', 'Unknown error')
+            print(f"[12data] API Error: {error_msg}")
+            raise ValueError(f"12data error: {error_msg}")
+        
+        # Check if data exists
+        if "values" not in data_json or not data_json["values"]:
+            raise ValueError(f"No data found for {symbol}. Check symbol format (e.g., BTC/USD, EUR/USD, AAPL)")
+        
+        print(f"[12data] Got {len(data_json['values'])} candles from API")
+        
+        # Parse JSON to DataFrame
+        records = []
+        for candle in data_json["values"]:
+            try:
+                records.append({
+                    "datetime": candle["datetime"],
+                    "Open": float(candle["open"]),
+                    "High": float(candle["high"]),
+                    "Low": float(candle["low"]),
+                    "Close": float(candle["close"]),
+                    "Volume": float(candle.get("volume", 0))
+                })
+            except (KeyError, ValueError) as e:
+                print(f"[12data] Skipping malformed candle: {candle} - {str(e)}")
+                continue
+        
+        df = pd.DataFrame(records)
+        
+        if df.empty:
+            raise ValueError(f"No valid candles after parsing")
+        
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.set_index("datetime")
+        df = df.sort_index()
+        
+        print(f"[12data] ✓ Successfully downloaded {len(df)} valid rows from 12data API")
+        print(f"[12data] Date range: {df.index.min()} to {df.index.max()}")
+        return df
+        
+    except requests.exceptions.Timeout:
+        raise ValueError("12data API request timed out. Try again later.")
+    except requests.exceptions.ConnectionError:
+        raise ValueError("Cannot connect to 12data API. Check your internet connection.")
+    except Exception as e:
+        print(f"[12data] Unexpected error: {str(e)}")
+        raise ValueError(f"12data error: {str(e)}")
+
+
 def compute_emas(df):
     df = df.copy()
     df["ema20"] = df["Close"].ewm(span=20, adjust=False).mean()
@@ -628,10 +971,28 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
     - Risk per trade: percentage of current equity to use per trade
     - This avoids look-ahead bias and uses realistic execution prices
     """
+    print(f"\n{'='*60}")
+    print(f"STRATEGY BACKTEST STARTING")
+    print(f"Initial Data: {len(df)} candles")
+    print(f"Date range: {df.index.min()} to {df.index.max()}")
+    print(f"Market: {market}, Initial Capital: {initial_capital}, Risk: {risk_per_trade}%")
+    print(f"{'='*60}\n")
+    
     df = df.copy()
     df["prev_ema20"] = df["ema20"].shift(1)
     df["prev_ema50"] = df["ema50"].shift(1)
     df["prev_ema100"] = df["ema100"].shift(1)
+    
+    # Debug: Show EMA values
+    print("EMA Debug Info:")
+    print(f"{'Bar':<5} {'DateTime':<20} {'Close':<10} {'EMA20':<10} {'EMA50':<10} {'EMA100':<10}")
+    print("-" * 70)
+    for i, (idx, row) in enumerate(df.iterrows()):
+        if i < 10 or i >= len(df) - 5:  # Show first 10 and last 5 rows
+            print(f"{i:<5} {str(idx):<20} {row['Close']:<10.2f} {row['ema20']:<10.2f} {row['ema50']:<10.2f} {row['ema100']:<10.2f}")
+        elif i == 10:
+            print("...")
+    print()
     
     trades = []
     equity = float(initial_capital)
@@ -675,22 +1036,22 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
             entry_price = open_price  # ACTUAL STRIKE PRICE at open
             entry_direction = pending_entry_direction
             
-            # Calculate position size based on risk percentage
-            trade_capital = equity * risk_multiplier
-            
+            # Calculate position size based on market type
             if use_lot_size and lot_value is not None and market == "forex":
-                # For FOREX: lot_value is DIRECT units to trade
-                # lot_value = 0.10 means trade 0.10 BTC (not 0.10 lots)
-                # lot_value = 1 means trade 1 BTC
-                # Position size is directly the lot size (in units of the asset)
-                entry_units = lot_value
+                # For FOREX/COMMODITIES: lot_size is scaled by 100x to get standard lot sizes
+                # lot_value = 0.10 means 0.10 * 100 = 10 ounces (or 10 micro lots)
+                # lot_value = 1.0 means 1.0 * 100 = 100 ounces (1 standard lot)
+                # lot_value = 0.01 means 0.01 * 100 = 1 ounce
+                # This matches forex convention where 0.01 lot = 1000 units
+                entry_units = lot_value * 100
             else:
-                # For STOCKS/INDICES/UPLOADED DATA: position sizing based on capital
+                # For STOCKS/INDICES/UPLOADED DATA: position sizing based on risk percentage
                 # entry_units = how many shares/units to buy
                 # Formula: units = (equity * risk%) / entry_price
+                trade_capital = equity * risk_multiplier
                 entry_units = trade_capital / entry_price
             
-            print(f"Trade {len(trades)+1}: equity={equity:.2f}, capital={trade_capital:.2f}, price={entry_price:.2f}, units={entry_units:.6f}, use_lot_size={use_lot_size}")
+            print(f"Trade {len(trades)+1}: equity={equity:.2f}, entry_price={entry_price:.2f}, units={entry_units:.6f}, market={market}, lot_size={lot_value}")
             
             pending_entry_direction = None
             
@@ -744,6 +1105,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
         # Detect entry signals at CLOSE of current bar
         if position == 0 and pending_entry_direction is None:
             if prev50 <= prev100 and curr50 > curr100:
+                print(f"[SIGNAL] LONG at bar {i}: EMA50 crossed above EMA100 (prev50={prev50:.2f} <= prev100={prev100:.2f}, curr50={curr50:.2f} > curr100={curr100:.2f})")
                 pending_entry_direction = "long"
                 entry_signal_bar = idx
                 # Store signal bar data for manual verification (handle NaN)
@@ -754,6 +1116,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                     "ema100": curr100 if not math.isnan(curr100) else None,
                 }
             elif prev50 >= prev100 and curr50 < curr100:
+                print(f"[SIGNAL] SHORT at bar {i}: EMA50 crossed below EMA100 (prev50={prev50:.2f} >= prev100={prev100:.2f}, curr50={curr50:.2f} < curr100={curr100:.2f})")
                 pending_entry_direction = "short"
                 entry_signal_bar = idx
                 # Store signal bar data for manual verification (handle NaN)
@@ -888,6 +1251,15 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
         "trades_displayed": len(trade_log) if trade_log else 0,
         "trades_limited": total_trades > len(trade_log) if not trade_df.empty else False,
     }
+    
+    print(f"\n{'='*60}")
+    print(f"STRATEGY BACKTEST COMPLETE")
+    print(f"Total Trades: {summary['trades']}")
+    print(f"Wins: {summary['wins']} | Losses: {summary['losses']} | Accuracy: {summary['accuracy']}%")
+    print(f"Total PnL: ${summary['total_pnl']} | Avg PnL: ${summary['avg_pnl']}")
+    print(f"Ending Equity: ${summary['ending_equity']}")
+    print(f"{'='*60}\n")
+    
     return {"summary": summary, "trade_log": trade_log}
 
 
@@ -1095,6 +1467,11 @@ async def run_backtest(
             if not start_date or not end_date:
                 raise ValueError("Please provide start and end dates")
             
+            # Auto-detect Binance symbols and use Binance API
+            if data_source_val == "yahoo" and selected_symbol.upper().endswith(('USDT', 'BUSD', 'USDC', 'TUSD')):
+                print(f"Auto-detected Binance symbol: {selected_symbol}, switching to Binance API")
+                data_source_val = "binance"
+            
             df = download_market_data(selected_symbol, start_date, end_date, interval, data_source_val)
         
         print(f"Downloaded {len(df)} rows of data")
@@ -1111,9 +1488,11 @@ async def run_backtest(
         
         source_names = {
             "yahoo": "Yahoo Finance",
+            "tweleve_data": "12data API",
             "upload": f"Uploaded CSV ({csv_file.filename if csv_file else 'file'})",
             "alpha_vantage": "Alpha Vantage",
-            "polygon": "Polygon.io"
+            "polygon": "Polygon.io",
+            "binance": "Binance API"
         }
         
         return JSONResponse(
