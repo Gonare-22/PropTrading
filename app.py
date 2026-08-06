@@ -28,13 +28,14 @@ class BacktestRequest(BaseModel):
     initial_capital: Optional[float] = 100000
     risk_per_trade: Optional[float] = 100.0  # Percentage of capital to risk per trade
     lot_size: Optional[float] = 0.10
-    data_source: Optional[str] = "yahoo"  # yahoo, alpha_vantage, polygon, upload
+    data_source: Optional[str] = "yahoo"  # yahoo, alpha_vantage, polygon, tweleve_data, upload
 
 DEFAULT_FOREX_LOT_SIZE = 0.10
 
 # API Keys (set these in environment variables for production)
 ALPHA_VANTAGE_KEY = "demo"  # Replace with your key or set env var
 POLYGON_API_KEY = "demo"    # Replace with your key or set env var
+TWELEVE_DATA_API_KEY = "25753a3ca5dd493896ae4e6a9a755631add"  # Tweleve Data API key
 
 MARKET_OPTIONS = {
     "india": [
@@ -74,13 +75,6 @@ MARKET_OPTIONS = {
         {"value": "BTCXAU=X", "label": "BTC/Gold (Synthetic)"},
     ],
 }
-
-DEFAULT_FOREX_LOT_SIZE = 0.10
-
-# API Keys (set these in environment variables for production)
-ALPHA_VANTAGE_KEY = "demo"  # Replace with your key or set env var
-POLYGON_API_KEY = "demo"    # Replace with your key or set env var
-
 
 def get_symbol_label(symbol: str, market: str):
     options = MARKET_OPTIONS.get(market, [])
@@ -160,7 +154,7 @@ def fetch_yahoo_chunked(symbol: str, start: str, end: str, interval: str):
 def download_market_data(symbol: str, start: str, end: str, interval: str, data_source: str = "yahoo", uploaded_df: pd.DataFrame = None):
     """
     Download market data from multiple sources or use uploaded file
-    data_source: 'yahoo', 'alpha_vantage', 'polygon', or 'upload'
+    data_source: 'yahoo', 'alpha_vantage', 'polygon', 'tweleve_data', or 'upload'
     """
     if data_source == "upload" and uploaded_df is not None:
         return uploaded_df
@@ -170,6 +164,8 @@ def download_market_data(symbol: str, start: str, end: str, interval: str, data_
         return download_alpha_vantage_data(symbol, start, end, interval)
     elif data_source == "polygon":
         return download_polygon_data(symbol, start, end, interval)
+    elif data_source == "tweleve_data":
+        return download_tweleve_data(symbol, start, end, interval)
     else:
         return download_yahoo_data(symbol, start, end, interval)
 
@@ -614,6 +610,78 @@ def download_polygon_data(symbol: str, start: str, end: str, interval: str):
     if df.empty:
         raise ValueError(f"No data found for {symbol} in the selected date range from Polygon")
     
+    return df
+
+
+def download_tweleve_data(symbol: str, start: str, end: str, interval: str):
+    """
+    Tweleve Data API download - real-time and historical market data
+    Supports multiple asset classes: stocks, forex, crypto, commodities
+    API Key: 25753a3ca5dd493896ae4e6a9a755631add
+    """
+    start, end = normalize_date_range(start, end)
+    
+    # Map intervals to Tweleve Data format
+    interval_map = {
+        "1m": "1min",
+        "5m": "5min",
+        "15m": "15min",
+        "30m": "30min",
+        "60m": "60min",
+        "1h": "60min",
+        "1d": "1day",
+    }
+    
+    tweleve_interval = interval_map.get(interval, "1day")
+    
+    # Build API URL
+    url = "https://api.twelvedata.com/time_series"
+    params = {
+        "symbol": symbol,
+        "interval": tweleve_interval,
+        "start_date": start,
+        "end_date": end,
+        "format": "JSON",
+        "apikey": TWELEVE_DATA_API_KEY
+    }
+    
+    print(f"Fetching {symbol} from Tweleve Data: {start} to {end}, interval: {tweleve_interval}")
+    
+    response = requests.get(url, params=params, timeout=30)
+    
+    if response.status_code != 200:
+        raise ValueError(f"Tweleve Data API error: {response.status_code}")
+    
+    data_json = response.json()
+    
+    # Check for errors
+    if data_json.get("status") == "error":
+        raise ValueError(f"Tweleve Data error: {data_json.get('message', 'Unknown error')}")
+    
+    if "data" not in data_json or not data_json["data"]:
+        raise ValueError(f"No data found for {symbol} from Tweleve Data. Check symbol format.")
+    
+    # Parse JSON to DataFrame
+    records = []
+    for candle in data_json["data"]:
+        records.append({
+            "datetime": candle["datetime"],
+            "Open": float(candle["open"]),
+            "High": float(candle["high"]),
+            "Low": float(candle["low"]),
+            "Close": float(candle["close"]),
+            "Volume": float(candle.get("volume", 0))
+        })
+    
+    df = pd.DataFrame(records)
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df.set_index("datetime")
+    df = df.sort_index()
+    
+    if df.empty:
+        raise ValueError(f"No data found for {symbol} in the selected date range from Tweleve Data")
+    
+    print(f"✓ Successfully downloaded {len(df)} rows from Tweleve Data")
     return df
 
 
@@ -1116,6 +1184,7 @@ async def run_backtest(
         
         source_names = {
             "yahoo": "Yahoo Finance",
+            "tweleve_data": "Tweleve Data API",
             "upload": f"Uploaded CSV ({csv_file.filename if csv_file else 'file'})",
             "alpha_vantage": "Alpha Vantage",
             "polygon": "Polygon.io"
