@@ -35,7 +35,8 @@ DEFAULT_FOREX_LOT_SIZE = 0.10
 # API Keys (set these in environment variables for production)
 ALPHA_VANTAGE_KEY = "demo"  # Replace with your key or set env var
 POLYGON_API_KEY = "demo"    # Replace with your key or set env var
-TWELEVE_DATA_API_KEY = "25753a3ca5dd493896ae4e6a9a755631add"  # Tweleve Data API key
+# Get your free API key at: https://twelvedata.com/pricing
+TWELEVE_DATA_API_KEY = "25753a3ca5dd493896ae4e6a9a755631add"  # INVALID - Replace with your key
 
 MARKET_OPTIONS = {
     "india": [
@@ -646,43 +647,67 @@ def download_tweleve_data(symbol: str, start: str, end: str, interval: str):
     }
     
     print(f"Fetching {symbol} from Tweleve Data: {start} to {end}, interval: {tweleve_interval}")
+    print(f"API Key: {TWELEVE_DATA_API_KEY[:10]}...")
     
-    response = requests.get(url, params=params, timeout=30)
-    
-    if response.status_code != 200:
-        raise ValueError(f"Tweleve Data API error: {response.status_code}")
-    
-    data_json = response.json()
-    
-    # Check for errors
-    if data_json.get("status") == "error":
-        raise ValueError(f"Tweleve Data error: {data_json.get('message', 'Unknown error')}")
-    
-    if "data" not in data_json or not data_json["data"]:
-        raise ValueError(f"No data found for {symbol} from Tweleve Data. Check symbol format.")
-    
-    # Parse JSON to DataFrame
-    records = []
-    for candle in data_json["data"]:
-        records.append({
-            "datetime": candle["datetime"],
-            "Open": float(candle["open"]),
-            "High": float(candle["high"]),
-            "Low": float(candle["low"]),
-            "Close": float(candle["close"]),
-            "Volume": float(candle.get("volume", 0))
-        })
-    
-    df = pd.DataFrame(records)
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    df = df.set_index("datetime")
-    df = df.sort_index()
-    
-    if df.empty:
-        raise ValueError(f"No data found for {symbol} in the selected date range from Tweleve Data")
-    
-    print(f"✓ Successfully downloaded {len(df)} rows from Tweleve Data")
-    return df
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        print(f"Response Status: {response.status_code}")
+        print(f"Response Headers: {response.headers}")
+        
+        if response.status_code != 200:
+            print(f"Full response: {response.text}")
+            # Parse error response
+            try:
+                error_json = response.json()
+                if error_json.get("code") == 401:
+                    raise ValueError(f"Tweleve Data API Key Invalid: The API key '25753a3ca5dd493896ae4e6a9a755631add' is not valid. Please get a free API key from https://twelvedata.com/pricing and update it in the application settings.")
+                error_msg = error_json.get('message', response.text)
+            except:
+                error_msg = response.text
+            raise ValueError(f"Tweleve Data API error: {response.status_code} - {error_msg}")
+        
+        data_json = response.json()
+        print(f"Response JSON: {data_json}")
+        
+        # Check for errors in response
+        if data_json.get("status") == "error":
+            error_msg = data_json.get('message', 'Unknown error')
+            print(f"API Error: {error_msg}")
+            raise ValueError(f"Tweleve Data error: {error_msg}")
+        
+        if "data" not in data_json or not data_json["data"]:
+            raise ValueError(f"No data found for {symbol} from Tweleve Data. Check symbol format.")
+        
+        # Parse JSON to DataFrame
+        records = []
+        for candle in data_json["data"]:
+            records.append({
+                "datetime": candle["datetime"],
+                "Open": float(candle["open"]),
+                "High": float(candle["high"]),
+                "Low": float(candle["low"]),
+                "Close": float(candle["close"]),
+                "Volume": float(candle.get("volume", 0))
+            })
+        
+        df = pd.DataFrame(records)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.set_index("datetime")
+        df = df.sort_index()
+        
+        if df.empty:
+            raise ValueError(f"No data found for {symbol} in the selected date range from Tweleve Data")
+        
+        print(f"✓ Successfully downloaded {len(df)} rows from Tweleve Data")
+        return df
+        
+    except requests.exceptions.Timeout:
+        raise ValueError("Tweleve Data API request timed out. Try again later.")
+    except requests.exceptions.ConnectionError:
+        raise ValueError("Cannot connect to Tweleve Data API. Check your internet connection.")
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        raise ValueError(f"Tweleve Data error: {str(e)}")
 
 
 def compute_emas(df):
