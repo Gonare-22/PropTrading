@@ -1038,12 +1038,16 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
             
             # Calculate position size based on market type
             if use_lot_size and lot_value is not None and market == "forex":
-                # For FOREX/COMMODITIES: lot_size is scaled by 100x to get standard lot sizes
-                # lot_value = 0.10 means 0.10 * 100 = 10 ounces (or 10 micro lots)
-                # lot_value = 1.0 means 1.0 * 100 = 100 ounces (1 standard lot)
-                # lot_value = 0.01 means 0.01 * 100 = 1 ounce
-                # This matches forex convention where 0.01 lot = 1000 units
-                entry_units = lot_value * 100
+                # For FOREX/COMMODITIES: Apply risk percentage to adjust lot size
+                # Risk percentage controls how much of capital is used as trading capital
+                # risk_per_trade = 5% → trade 5% of capital's worth in ounces
+                # Formula: units = (capital * risk%) / entry_price
+                # Example: ($1000 * 5%) / $4169.52 = $50 / $4169.52 = 0.012 ounces
+                # OR: units = lot_size * risk_multiplier (if lot_size represents base size)
+                # 
+                # We use: actual_lot = lot_value * (risk_per_trade / 100)
+                # So if lot_value=0.10 and risk=5%, then actual_lot = 0.10 * 0.05 = 0.005 scaled by 100 = 0.5 ounces
+                entry_units = lot_value * (risk_per_trade / 100.0) * 100
             else:
                 # For STOCKS/INDICES/UPLOADED DATA: position sizing based on risk percentage
                 # entry_units = how many shares/units to buy
@@ -1051,7 +1055,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                 trade_capital = equity * risk_multiplier
                 entry_units = trade_capital / entry_price
             
-            print(f"Trade {len(trades)+1}: equity={equity:.2f}, entry_price={entry_price:.2f}, units={entry_units:.6f}, market={market}, lot_size={lot_value}")
+            print(f"Trade {len(trades)+1}: equity={equity:.2f}, entry_price={entry_price:.2f}, units={entry_units:.6f}, risk={risk_per_trade}%, lot_size={lot_value}")
             
             pending_entry_direction = None
             
