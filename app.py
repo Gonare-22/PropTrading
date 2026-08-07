@@ -1003,6 +1003,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
     entry_units = 0.0
     entry_signal_bar = None
     exit_signal_bar = None
+    stop_loss_price = None  # NEW: Track stop loss level
     
     # Store signal bar EMAs and prices for manual verification
     signal_bar_data = None
@@ -1026,8 +1027,87 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
     for i, (idx, row) in enumerate(df_list):
         close = float(row["Close"])
         open_price = float(row.get("Open", close))
+        high_price = float(row.get("High", close))
+        low_price = float(row.get("Low", close))
         prev20, prev50, prev100 = float(row["prev_ema20"]), float(row["prev_ema50"]), float(row["prev_ema100"])
         curr20, curr50, curr100 = float(row["ema20"]), float(row["ema50"]), float(row["ema100"])
+
+        # Check if stop loss is hit (for active positions)
+        # Check against unrealized loss percentage during the candle
+        if position != 0:
+            # Calculate unrealized loss based on worst price during candle
+            if position == 1:  # LONG position
+                # Worst price for LONG = lowest price in candle
+                worst_price = low_price
+                unrealized_loss = entry_units * (entry_price - worst_price)
+            else:  # SHORT position (-1)
+                # Worst price for SHORT = highest price in candle
+                worst_price = high_price
+                unrealized_loss = entry_units * (worst_price - entry_price)
+            
+            unrealized_loss_pct = (unrealized_loss / equity) * 100.0
+            
+            # Check if unrealized loss exceeds risk limit
+            if risk_per_trade < 100 and unrealized_loss_pct >= risk_per_trade:
+                # Stop loss hit - calculate exit price to match exact risk %
+                max_loss_amount = equity * (risk_per_trade / 100.0)
+                
+                if position == 1:  # LONG
+                    exit_price = entry_price - (max_loss_amount / entry_units)
+                else:  # SHORT
+                    exit_price = entry_price + (max_loss_amount / entry_units)
+                
+                # Exit due to stop loss
+                if position == 1:
+                    pnl = entry_units * (exit_price - entry_price)
+                else:
+                    pnl = entry_units * (entry_price - exit_price)
+                
+                equity += pnl
+                pnl_pct = (pnl / initial_capital) * 100.0
+                
+                # Calculate exact loss percentage based on the exit price we calculated
+                exact_loss_pct = (abs(pnl) / initial_capital) * 100.0
+                
+                trades.append({
+                    "entry_signal_bar": entry_signal_bar,
+                    "entry_time": entry_time,
+                    "exit_signal_bar": idx,
+                    "exit_time": idx,
+                    "direction": entry_direction,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "pnl": pnl,
+                    "pnl_pct": pnl_pct,
+                    "position_size": entry_units,
+                    "capital_used": entry_units * entry_price,
+                    "risk_pct": risk_per_trade,
+                    "lot_size": lot_value if use_lot_size else None,
+                    "equity_after": equity,
+                    "stop_loss": True,  # Mark as stop loss exit
+                    "signal_bar_close": signal_bar_data["close"] if signal_bar_data else None,
+                    "signal_bar_ema20": signal_bar_data["ema20"] if signal_bar_data else None,
+                    "signal_bar_ema50": signal_bar_data["ema50"] if signal_bar_data else None,
+                    "signal_bar_ema100": signal_bar_data["ema100"] if signal_bar_data else None,
+                    "exit_signal_close": close,
+                    "exit_signal_ema20": curr20,
+                    "exit_signal_ema50": curr50,
+                })
+                
+                print(f"[STOP LOSS] Hit stop loss at {idx}: {entry_direction.upper()} position closed at ${exit_price:.2f}, unrealized loss: {unrealized_loss_pct:.2f}% >= {risk_per_trade}%, PnL: ${pnl:.2f} ({exact_loss_pct:.2f}%)")
+                
+                position = 0
+                entry_price = None
+                entry_time = None
+                entry_direction = None
+                entry_units = 0.0
+                entry_signal_bar = None
+                exit_signal_bar = None
+                stop_loss_price = None
+                signal_bar_data = None
+                exit_signal_bar_data = None
+                pending_exit_signal = False
+                continue  # Skip normal exit logic
 
         # Execute pending entry at current bar's OPEN price
         if position == 0 and pending_entry_direction is not None:
@@ -1036,26 +1116,39 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
             entry_price = open_price  # ACTUAL STRIKE PRICE at open
             entry_direction = pending_entry_direction
             
-            # Calculate position size based on market type
+            # Calculate position size - FIXED, does not change with risk percentage
             if use_lot_size and lot_value is not None and market == "forex":
-                # For FOREX/COMMODITIES: Apply risk percentage to adjust lot size
-                # Risk percentage controls how much of capital is used as trading capital
-                # risk_per_trade = 5% → trade 5% of capital's worth in ounces
-                # Formula: units = (capital * risk%) / entry_price
-                # Example: ($1000 * 5%) / $4169.52 = $50 / $4169.52 = 0.012 ounces
-                # OR: units = lot_size * risk_multiplier (if lot_size represents base size)
-                # 
-                # We use: actual_lot = lot_value * (risk_per_trade / 100)
-                # So if lot_value=0.10 and risk=5%, then actual_lot = 0.10 * 0.05 = 0.005 scaled by 100 = 0.5 ounces
-                entry_units = lot_value * (risk_per_trade / 100.0) * 100
+                # For FOREX/COMMODITIES: Fixed lot size (not adjusted by risk)
+                entry_units = lot_value * 100
             else:
-                # For STOCKS/INDICES/UPLOADED DATA: position sizing based on risk percentage
-                # entry_units = how many shares/units to buy
-                # Formula: units = (equity * risk%) / entry_price
-                trade_capital = equity * risk_multiplier
+                # For STOCKS/INDICES/UPLOADED DATA: Fixed position sizing
+                # Using 1% of equity as standard position size (or fixed amount)
+                trade_capital = equity * 0.01  # Fixed 1% position size
                 entry_units = trade_capital / entry_price
             
-            print(f"Trade {len(trades)+1}: equity={equity:.2f}, entry_price={entry_price:.2f}, units={entry_units:.6f}, risk={risk_per_trade}%, lot_size={lot_value}")
+            # Calculate stop loss based on risk percentage of TOTAL ACCOUNT CAPITAL
+            # Risk % = maximum loss as % of current equity
+            if risk_per_trade == 100:
+                # 100% risk = no stop loss
+                stop_loss_price = None
+                max_loss_amount = None
+            else:
+                # Maximum loss amount = risk% of current equity
+                max_loss_amount = equity * (risk_per_trade / 100.0)
+                
+                # Calculate stop loss price based on max loss amount and position size
+                # For LONG: stop_loss_price = entry_price - (max_loss / units)
+                # For SHORT: stop_loss_price = entry_price + (max_loss / units)
+                price_distance = max_loss_amount / entry_units
+                
+                if entry_direction == "long":
+                    stop_loss_price = entry_price - price_distance
+                else:
+                    stop_loss_price = entry_price + price_distance
+            
+            stop_loss_str = f"${stop_loss_price:.2f}" if stop_loss_price is not None else "None (No Stop Loss)"
+            max_loss_str = f"${max_loss_amount:.2f}" if max_loss_amount is not None else "Unlimited"
+            print(f"Trade {len(trades)+1}: {entry_direction.upper()} entry at ${entry_price:.2f}, stop loss at {stop_loss_str}, max loss: {max_loss_str}, units={entry_units:.6f}, risk={risk_per_trade}%")
             
             pending_entry_direction = None
             

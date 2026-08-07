@@ -126,7 +126,13 @@
           </div>
           <div>
             <label>Risk Per Trade (%) <span id="risk-preview" style="color:#2ecc71;font-weight:700;"></span></label>
-            <input type="number" id="risk_per_trade" name="risk_per_trade" value="100" min="1" max="100" step="0.5" />
+            <input type="number" id="risk_per_trade" name="risk_per_trade" value="100" min="0" max="100" step="0.5" />
+            <small style="color:#bcd2e8;display:block;margin-top:4px;">Maximum loss as % of account capital per trade</small>
+          </div>
+          <div id="forex-risk-group" style="display:none;">
+            <label>Forex Risk Per Trade (%) <span id="forex-risk-preview" style="color:#ffd700;font-weight:700;"></span></label>
+            <input type="number" id="forex_risk_per_trade" name="forex_risk_per_trade" value="100" min="0" max="100" step="0.5" />
+            <small style="color:#bcd2e8;display:block;margin-top:4px;">Maximum loss as % of account capital per trade (Forex only)</small>
           </div>
           <div id="lot-size-group" style="display:none;">
             <label>Lot Size (Forex)</label>
@@ -143,6 +149,7 @@
       const symbolSelect = document.getElementById('symbol');
       const marketSelect = document.getElementById('market');
       const lotSizeGroup = document.getElementById('lot-size-group');
+      const forexRiskGroup = document.getElementById('forex-risk-group');
       const dataSourceSelect = document.getElementById('data_source');
       const fileUploadGroup = document.getElementById('file-upload-group');
       const startDateInput = document.getElementById('start_date').parentElement;
@@ -159,6 +166,7 @@
           symbolSelect.appendChild(opt);
         });
         lotSizeGroup.style.display = market === 'forex' ? 'block' : 'none';
+        forexRiskGroup.style.display = market === 'forex' ? 'block' : 'none';
       }
       
       marketSelect.addEventListener('change', populateSymbols);
@@ -175,19 +183,29 @@
       populateSymbols();
       
       const riskInput = document.getElementById('risk_per_trade');
+      const forexRiskInput = document.getElementById('forex_risk_per_trade');
       const capitalInput = document.getElementById('initial_capital');
       const riskPreview = document.getElementById('risk-preview');
+      const forexRiskPreview = document.getElementById('forex-risk-preview');
       
       function updateRiskPreview() {
         const capital = Number(capitalInput.value || 100000);
         const risk = Number(riskInput.value || 100);
-        const tradeCapital = capital * (risk / 100);
+        const maxLoss = capital * (risk / 100);
         const market = document.getElementById('market').value;
         const currency = market === 'india' ? '₹' : '$';
-        riskPreview.textContent = `(${currency}${tradeCapital.toLocaleString()} per trade)`;
+        riskPreview.textContent = `(Max Loss: ${currency}${maxLoss.toLocaleString()})`;
+        
+        // Update Forex risk preview if visible
+        if (market === 'forex') {
+          const forexRisk = Number(forexRiskInput.value || 100);
+          const forexMaxLoss = capital * (forexRisk / 100);
+          forexRiskPreview.textContent = `(Max Loss: $${forexMaxLoss.toLocaleString()})`;
+        }
       }
       
       riskInput.addEventListener('input', updateRiskPreview);
+      forexRiskInput.addEventListener('input', updateRiskPreview);
       capitalInput.addEventListener('input', function() {
         updateRiskPreview();
         // Clear previous results when user changes input
@@ -231,7 +249,9 @@
               uploadFormData.append('csv_file', fileInput.files[0]);
               uploadFormData.append('market', formData.get('market'));
               uploadFormData.append('initial_capital', formData.get('initial_capital'));
-              uploadFormData.append('risk_per_trade', formData.get('risk_per_trade'));
+              const market = formData.get('market');
+              const riskValue = market === 'forex' ? formData.get('forex_risk_per_trade') : formData.get('risk_per_trade');
+              uploadFormData.append('risk_per_trade', riskValue);
               uploadFormData.append('lot_size', formData.get('lot_size'));
               uploadFormData.append('data_source', 'upload');
               
@@ -242,8 +262,10 @@
               data = await response.json();
             }
           } else {
+            const market = formData.get('market');
+            const riskValue = market === 'forex' ? formData.get('forex_risk_per_trade') : formData.get('risk_per_trade');
             const payload = {
-              market: formData.get('market'),
+              market: market,
               symbol: formData.get('symbol'),
               custom_symbol: formData.get('custom_symbol'),
               start_date: formData.get('start_date'),
@@ -251,7 +273,7 @@
               interval: formData.get('interval'),
               data_source: formData.get('data_source'),
               initial_capital: Number(formData.get('initial_capital')),
-              risk_per_trade: Number(formData.get('risk_per_trade')),
+              risk_per_trade: Number(riskValue),
               lot_size: Number(formData.get('lot_size'))
             };
             
