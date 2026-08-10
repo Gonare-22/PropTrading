@@ -12,6 +12,9 @@ import requests
 import json
 import math
 import io
+import MetaTrader5 as mt5
+import os
+from typing import Dict, Tuple
 
 app = FastAPI(title="EMA Strategy Backtest UI")
 base_dir = Path(__file__).resolve().parent
@@ -37,6 +40,15 @@ ALPHA_VANTAGE_KEY = "demo"  # Replace with your key or set env var
 POLYGON_API_KEY = "demo"    # Replace with your key or set env var
 TWELEVE_DATA_API_KEY = "25753a3ca5dd493896ae4e6a9a755631"  # Valid 12data API key
 
+# MetaTrader5 Configuration
+MT5_EMAIL = "vaishnavgonare1@gmail.com"
+MT5_PASSWORD = "Vaishnav@2002"
+MT5_SERVER = "ICMarketsSC-Demo"  # Common demo server for MT5, you can adjust if needed
+
+# Initialize MT5 connection flag
+MT5_INITIALIZED = False
+MT5_CONNECTION_ERROR = None
+
 MARKET_OPTIONS = {
     "india": [
         {"value": "^NSEI", "label": "Nifty 50"},
@@ -54,41 +66,10 @@ MARKET_OPTIONS = {
         {"value": "MSFT", "label": "Microsoft"},
     ],
     "forex": [
-        {"value": "EURUSD=X", "label": "EUR/USD"},
-        {"value": "GBPUSD=X", "label": "GBP/USD"},
-        {"value": "USDJPY=X", "label": "USD/JPY"},
-        {"value": "AUDUSD=X", "label": "AUD/USD"},
-        {"value": "USDCAD=X", "label": "USD/CAD"},
-        {"value": "USDCHF=X", "label": "USD/CHF"},
-        {"value": "NZDUSD=X", "label": "NZD/USD"},
-        {"value": "EURGBP=X", "label": "EUR/GBP"},
-        {"value": "EURJPY=X", "label": "EUR/JPY"},
-        {"value": "GBPJPY=X", "label": "GBP/JPY"},
-        {"value": "USDINR=X", "label": "USD/INR"},
-        {"value": "EURINR=X", "label": "EUR/INR"},
-        {"value": "GBPINR=X", "label": "GBP/INR"},
-        {"value": "JPYINR=X", "label": "JPY/INR"},
-        {"value": "XAU-USD", "label": "Gold (XAU/USD) - 12data"},
-        {"value": "XAG-USD", "label": "Silver (XAG/USD) - 12data"},
-        {"value": "GLD", "label": "Gold (GLD ETF - Yahoo)"},
-        {"value": "SLV", "label": "Silver (SLV ETF - Yahoo)"},
-        {"value": "BTC-USD", "label": "Bitcoin (BTC/USD)"},
-        {"value": "ETH-USD", "label": "Ethereum (ETH/USD)"},
-        {"value": "BTCXAU=X", "label": "BTC/Gold (Synthetic)"},
-        # Binance Cryptocurrency pairs
-        {"value": "BTCUSDT", "label": "Bitcoin (BTC/USDT) - Binance", "source": "binance"},
-        {"value": "ETHUSDT", "label": "Ethereum (ETH/USDT) - Binance", "source": "binance"},
-        {"value": "BNBUSDT", "label": "Binance Coin (BNB/USDT) - Binance", "source": "binance"},
-        {"value": "XRPUSDT", "label": "Ripple (XRP/USDT) - Binance", "source": "binance"},
-        {"value": "ADAUSDT", "label": "Cardano (ADA/USDT) - Binance", "source": "binance"},
-        {"value": "DOGEUSDT", "label": "Dogecoin (DOGE/USDT) - Binance", "source": "binance"},
-        {"value": "SOLUSDT", "label": "Solana (SOL/USDT) - Binance", "source": "binance"},
-        {"value": "LTCUSDT", "label": "Litecoin (LTC/USDT) - Binance", "source": "binance"},
-        {"value": "BCHUSDT", "label": "Bitcoin Cash (BCH/USDT) - Binance", "source": "binance"},
-        {"value": "LINKUSDT", "label": "Chainlink (LINK/USDT) - Binance", "source": "binance"},
-        # Binance Commodities (TradFi)
+        {"value": "XAUUSD", "label": "Gold (XAUUSD) - MetaTrader5", "source": "mt5"},
         {"value": "XAUUSDT", "label": "Gold (XAU/USDT) - Binance", "source": "binance"},
         {"value": "XAGUSDT", "label": "Silver (XAG/USDT) - Binance", "source": "binance"},
+        {"value": "BTCUSDT", "label": "Bitcoin (BTC/USDT) - Binance", "source": "binance"},
     ],
 }
 
@@ -167,10 +148,159 @@ def fetch_yahoo_chunked(symbol: str, start: str, end: str, interval: str):
     return concatenated
 
 
+def initialize_mt5() -> Tuple[bool, str]:
+    """
+    Initialize MetaTrader5 connection with account credentials
+    Returns: (success: bool, message: str)
+    """
+    global MT5_INITIALIZED, MT5_CONNECTION_ERROR
+    
+    try:
+        if MT5_INITIALIZED:
+            return True, "MT5 already initialized"
+        
+        # Initialize MT5
+        if not mt5.initialize():
+            error = mt5.last_error()
+            MT5_CONNECTION_ERROR = f"MT5 initialization failed: {error}"
+            print(MT5_CONNECTION_ERROR)
+            return False, MT5_CONNECTION_ERROR
+        
+        print("✓ MT5 initialized successfully")
+        MT5_INITIALIZED = True
+        return True, "MT5 initialized successfully"
+    
+    except Exception as e:
+        error_msg = f"MT5 initialization error: {str(e)}"
+        MT5_CONNECTION_ERROR = error_msg
+        print(error_msg)
+        return False, error_msg
+
+
+def download_mt5_data(symbol: str, start: str, end: str, interval: str) -> pd.DataFrame:
+    """
+    Download 1-minute and intraday data from MetaTrader5
+    Supports: XAUUSD, Forex pairs, stocks, indices
+    
+    Args:
+        symbol: MT5 symbol (e.g., 'XAUUSD', 'EURUSD', 'AAPL')
+        start: Start date (YYYY-MM-DD)
+        end: End date (YYYY-MM-DD)
+        interval: '1m', '5m', '15m', '1h', '1d'
+    
+    Returns:
+        DataFrame with OHLCV data
+    """
+    
+    global MT5_INITIALIZED
+
+    # Initialize MT5 if not already done
+    if not MT5_INITIALIZED:
+        success, msg = initialize_mt5()
+        if not success:
+            raise ValueError(f"Cannot connect to MT5: {msg}. Please ensure MT5 terminal is running.")
+    
+    # Map interval to MT5 timeframe
+    timeframe_map = {
+        "1m": mt5.TIMEFRAME_M1,
+        "5m": mt5.TIMEFRAME_M5,
+        "15m": mt5.TIMEFRAME_M15,
+        "30m": mt5.TIMEFRAME_M30,
+        "60m": mt5.TIMEFRAME_H1,
+        "1h": mt5.TIMEFRAME_H1,
+        "1d": mt5.TIMEFRAME_D1,
+    }
+    
+    timeframe = timeframe_map.get(interval, mt5.TIMEFRAME_M1)
+
+    # MT5 requires native Python datetime objects (not pandas Timestamps)
+    from datetime import datetime as _dt
+    start_dt = pd.to_datetime(start).to_pydatetime().replace(tzinfo=None)
+    end_dt = pd.to_datetime(end).to_pydatetime().replace(tzinfo=None)
+    # MT5 rejects end dates in the future - cap at current time
+    now = _dt.now()
+    if end_dt >= now:
+        end_dt = now
+    else:
+        # For past dates include the full end day
+        end_dt = end_dt.replace(hour=23, minute=59, second=59)
+    
+    print(f"[MT5] Fetching {symbol} at {interval} from {start_dt} to {end_dt}")
+    print(f"[MT5] Timeframe: {timeframe}, Symbol: {symbol}")
+    
+    try:
+        # Re-initialize MT5 in case connection was lost
+        if not mt5.terminal_info():
+            print("[MT5] Terminal not connected, re-initializing...")
+            MT5_INITIALIZED = False
+            success, msg = initialize_mt5()
+            if not success:
+                raise ValueError(f"Cannot connect to MT5: {msg}. Please ensure MT5 terminal is running.")
+
+        # Select symbol first
+        selected = mt5.symbol_select(symbol, True)
+        print(f"[MT5] symbol_select({symbol}): {selected}")
+        if not selected:
+            last_err = mt5.last_error()
+            raise ValueError(f"Symbol {symbol} not found in MT5 (error: {last_err}). Add it to Market Watch in MT5 terminal.")
+        
+        # Get rates from MT5
+        rates = mt5.copy_rates_range(symbol, timeframe, start_dt, end_dt)
+        print(f"[MT5] copy_rates_range returned: {type(rates)}, len: {len(rates) if rates is not None else 'None'}")
+        
+        # Check if rates is empty using .size for numpy array
+        if rates is None or (hasattr(rates, 'size') and rates.size == 0) or len(rates) == 0:
+            last_err = mt5.last_error()
+            raise ValueError(
+                f"No data found for {symbol} ({last_err}). "
+                f"Ensure: 1) MT5 terminal is running, 2) Symbol {symbol} in Market Watch, "
+                f"3) Date range has market data, 4) Market was open during that time"
+            )
+        
+        print(f"[MT5] ✓ Downloaded {len(rates)} candles")
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(rates)
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        df = df.rename(columns={
+            'time': 'datetime',
+            'open': 'Open',
+            'high': 'High',
+            'low': 'Low',
+            'close': 'Close',
+            'tick_volume': 'Volume'
+        })
+        
+        df = df[['datetime', 'Open', 'High', 'Low', 'Close', 'Volume']]
+        df = df.set_index('datetime')
+        df = df.sort_index()
+        
+        print(f"[MT5] ✓ Data range: {df.index.min()} to {df.index.max()}")
+        print(f"[MT5] ✓ Records: {len(df)}")
+        
+        return df
+    
+    except Exception as e:
+        print(f"[MT5] Error: {str(e)}")
+        raise ValueError(f"MT5 data fetch error: {str(e)}")
+
+
+def shutdown_mt5():
+    """Cleanup MT5 connection"""
+    global MT5_INITIALIZED
+    try:
+        if MT5_INITIALIZED:
+            mt5.shutdown()
+            MT5_INITIALIZED = False
+            print("MT5 connection closed")
+    except Exception as e:
+        print(f"Error closing MT5: {str(e)}")
+
+
 def download_market_data(symbol: str, start: str, end: str, interval: str, data_source: str = "yahoo", uploaded_df: pd.DataFrame = None):
     """
     Download market data from multiple sources or use uploaded file
-    data_source: 'yahoo', 'alpha_vantage', 'polygon', 'tweleve_data', 'binance', or 'upload'
+    data_source: 'yahoo', 'alpha_vantage', 'polygon', 'tweleve_data', 'binance', 'mt5', or 'upload'
     """
     if data_source == "upload" and uploaded_df is not None:
         return uploaded_df
@@ -184,6 +314,8 @@ def download_market_data(symbol: str, start: str, end: str, interval: str, data_
         return download_tweleve_data(symbol, start, end, interval)
     elif data_source == "binance":
         return download_binance_data(symbol, start, end, interval)
+    elif data_source == "mt5":
+        return download_mt5_data(symbol, start, end, interval)
     else:
         return download_yahoo_data(symbol, start, end, interval)
 
@@ -963,6 +1095,12 @@ def compute_emas(df):
     return df
 
 
+# Minimum candles before any signal is allowed
+# EMA-100 needs ~100 bars to stabilize. Using 100 as warmup is sufficient.
+# The old value of 300 caused 0 trades on datasets smaller than 300 bars (e.g. 1 year daily).
+EMA_WARMUP_BARS = 100
+
+
 def run_strategy(df, initial_capital: float, market: str = "india", lot_size: float | None = None, risk_per_trade: float = 100.0):
     """
     Fixed backtest logic with risk management:
@@ -1021,6 +1159,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
     risk_multiplier = risk_per_trade / 100.0
     
     print(f"Strategy config: market={market}, use_lot_size={use_lot_size}, lot_value={lot_value}, risk={risk_per_trade}%, initial_capital={initial_capital}")
+    print(f"Warmup Period: Skipping first {EMA_WARMUP_BARS} candles for EMA stabilization")
 
     df_list = list(df.iterrows())
     
@@ -1033,24 +1172,23 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
         curr20, curr50, curr100 = float(row["ema20"]), float(row["ema50"]), float(row["ema100"])
 
         # Check if stop loss is hit (for active positions)
-        # Check against unrealized loss percentage during the candle
+        # Loss % is calculated against INITIAL CAPITAL for the trade
         if position != 0:
             # Calculate unrealized loss based on worst price during candle
             if position == 1:  # LONG position
-                # Worst price for LONG = lowest price in candle
                 worst_price = low_price
                 unrealized_loss = entry_units * (entry_price - worst_price)
-            else:  # SHORT position (-1)
-                # Worst price for SHORT = highest price in candle
+            else:  # SHORT position
                 worst_price = high_price
                 unrealized_loss = entry_units * (worst_price - entry_price)
             
-            unrealized_loss_pct = (unrealized_loss / equity) * 100.0
+            # Calculate loss % against INITIAL CAPITAL (not current equity)
+            unrealized_loss_pct = (unrealized_loss / initial_capital) * 100.0
             
             # Check if unrealized loss exceeds risk limit
             if risk_per_trade < 100 and unrealized_loss_pct >= risk_per_trade:
-                # Stop loss hit - calculate exit price to match exact risk %
-                max_loss_amount = equity * (risk_per_trade / 100.0)
+                # Stop loss hit - calculate exit price to match exact risk % of INITIAL CAPITAL
+                max_loss_amount = initial_capital * (risk_per_trade / 100.0)
                 
                 if position == 1:  # LONG
                     exit_price = entry_price - (max_loss_amount / entry_units)
@@ -1065,9 +1203,6 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                 
                 equity += pnl
                 pnl_pct = (pnl / initial_capital) * 100.0
-                
-                # Calculate exact loss percentage based on the exit price we calculated
-                exact_loss_pct = (abs(pnl) / initial_capital) * 100.0
                 
                 trades.append({
                     "entry_signal_bar": entry_signal_bar,
@@ -1084,7 +1219,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                     "risk_pct": risk_per_trade,
                     "lot_size": lot_value if use_lot_size else None,
                     "equity_after": equity,
-                    "stop_loss": True,  # Mark as stop loss exit
+                    "stop_loss": True,
                     "signal_bar_close": signal_bar_data["close"] if signal_bar_data else None,
                     "signal_bar_ema20": signal_bar_data["ema20"] if signal_bar_data else None,
                     "signal_bar_ema50": signal_bar_data["ema50"] if signal_bar_data else None,
@@ -1094,7 +1229,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                     "exit_signal_ema50": curr50,
                 })
                 
-                print(f"[STOP LOSS] Hit stop loss at {idx}: {entry_direction.upper()} position closed at ${exit_price:.2f}, unrealized loss: {unrealized_loss_pct:.2f}% >= {risk_per_trade}%, PnL: ${pnl:.2f} ({exact_loss_pct:.2f}%)")
+                print(f"[STOP LOSS] Hit at {idx}: {entry_direction.upper()} closed at ${exit_price:.2f}, loss: ${abs(pnl):.2f} ({abs(pnl_pct):.2f}% of initial capital)")
                 
                 position = 0
                 entry_price = None
@@ -1201,28 +1336,43 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
 
         # Detect entry signals at CLOSE of current bar
         if position == 0 and pending_entry_direction is None:
+            # Skip warmup period to avoid false signals
+            if i < EMA_WARMUP_BARS:
+                continue
+                
+            # LONG signal: EMA50 crosses above EMA100
             if prev50 <= prev100 and curr50 > curr100:
-                print(f"[SIGNAL] LONG at bar {i}: EMA50 crossed above EMA100 (prev50={prev50:.2f} <= prev100={prev100:.2f}, curr50={curr50:.2f} > curr100={curr100:.2f})")
-                pending_entry_direction = "long"
-                entry_signal_bar = idx
-                # Store signal bar data for manual verification (handle NaN)
-                signal_bar_data = {
-                    "close": close if not math.isnan(close) else None,
-                    "ema20": curr20 if not math.isnan(curr20) else None,
-                    "ema50": curr50 if not math.isnan(curr50) else None,
-                    "ema100": curr100 if not math.isnan(curr100) else None,
-                }
+                # Verify EMA alignment for valid trend: EMA20 > EMA50 > EMA100 after crossover
+                if curr20 > curr50 and curr50 > curr100:
+                    print(f"[SIGNAL] LONG at bar {i}: EMA50 crossed above EMA100 (prev50={prev50:.2f} <= prev100={prev100:.2f}, curr50={curr50:.2f} > curr100={curr100:.2f})")
+                    print(f"          EMA Alignment confirmed: EMA20={curr20:.2f} > EMA50={curr50:.2f} > EMA100={curr100:.2f}")
+                    pending_entry_direction = "long"
+                    entry_signal_bar = idx
+                    signal_bar_data = {
+                        "close": close if not math.isnan(close) else None,
+                        "ema20": curr20 if not math.isnan(curr20) else None,
+                        "ema50": curr50 if not math.isnan(curr50) else None,
+                        "ema100": curr100 if not math.isnan(curr100) else None,
+                    }
+                else:
+                    print(f"[REJECTED] LONG at bar {i}: EMA50 crossed EMA100 BUT alignment wrong (EMA20={curr20:.2f}, EMA50={curr50:.2f}, EMA100={curr100:.2f})")
+                    
+            # SHORT signal: EMA50 crosses below EMA100
             elif prev50 >= prev100 and curr50 < curr100:
-                print(f"[SIGNAL] SHORT at bar {i}: EMA50 crossed below EMA100 (prev50={prev50:.2f} >= prev100={prev100:.2f}, curr50={curr50:.2f} < curr100={curr100:.2f})")
-                pending_entry_direction = "short"
-                entry_signal_bar = idx
-                # Store signal bar data for manual verification (handle NaN)
-                signal_bar_data = {
-                    "close": close if not math.isnan(close) else None,
-                    "ema20": curr20 if not math.isnan(curr20) else None,
-                    "ema50": curr50 if not math.isnan(curr50) else None,
-                    "ema100": curr100 if not math.isnan(curr100) else None,
-                }
+                # Verify EMA alignment for valid trend: EMA20 < EMA50 < EMA100 after crossover
+                if curr20 < curr50 and curr50 < curr100:
+                    print(f"[SIGNAL] SHORT at bar {i}: EMA50 crossed below EMA100 (prev50={prev50:.2f} >= prev100={prev100:.2f}, curr50={curr50:.2f} < curr100={curr100:.2f})")
+                    print(f"          EMA Alignment confirmed: EMA20={curr20:.2f} < EMA50={curr50:.2f} < EMA100={curr100:.2f}")
+                    pending_entry_direction = "short"
+                    entry_signal_bar = idx
+                    signal_bar_data = {
+                        "close": close if not math.isnan(close) else None,
+                        "ema20": curr20 if not math.isnan(curr20) else None,
+                        "ema50": curr50 if not math.isnan(curr50) else None,
+                        "ema100": curr100 if not math.isnan(curr100) else None,
+                    }
+                else:
+                    print(f"[REJECTED] SHORT at bar {i}: EMA50 crossed EMA100 BUT alignment wrong (EMA20={curr20:.2f}, EMA50={curr50:.2f}, EMA100={curr100:.2f})")
                 
         # Detect exit signals at CLOSE of current bar
         elif position == 1 and not pending_exit_signal:

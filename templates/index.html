@@ -53,8 +53,25 @@
       .pnl-negative { color: #e74c3c; font-weight: 700; }
       .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); }
       label { display: block; margin-bottom: 6px; font-weight: 600; }
-      input, select, button { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #5e7f99; }
-      button { background: linear-gradient(135deg,#27ae60,#2ecc71); color: white; font-weight: 700; cursor: pointer; margin-top: 8px; }
+      input, select, button { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #5e7f99; box-sizing: border-box; }
+      input, select {
+        background: #0f2236;
+        color: #f4f7fb;
+        -webkit-appearance: none;
+        appearance: none;
+      }
+      select {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23f4f7fb' d='M6 8L0 0h12z'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 12px center;
+        padding-right: 32px;
+      }
+      option {
+        background: #0f2236;
+        color: #f4f7fb;
+      }
+      button { background: linear-gradient(135deg,#27ae60,#2ecc71); color: white; font-weight: 700; cursor: pointer; margin-top: 8px; border: none; }
+      button:hover { opacity: 0.9; }
       .result { margin-top: 20px; padding: 16px; border-radius: 12px; background: rgba(0,0,0,0.18); }
       .metrics { display: grid; grid-template-columns: repeat(auto-fit,minmax(140px,1fr)); gap: 12px; margin-top: 12px; }
       .metric { background: linear-gradient(135deg, rgba(255,255,255,0.18), rgba(255,255,255,0.08)); padding: 18px; border-radius: 14px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); }
@@ -86,13 +103,13 @@
             <label>Custom Symbol</label>
             <input type="text" id="custom_symbol" name="custom_symbol" placeholder="Enter custom symbol or leave blank" />
           </div>
-          <div>
+          <div id="start-date-group">
             <label>Start Date</label>
-            <input type="date" id="start_date" name="start_date" value="2024-01-01" />
+            <input type="date" id="start_date" name="start_date" />
           </div>
-          <div>
+          <div id="end-date-group">
             <label>End Date</label>
-            <input type="date" id="end_date" name="end_date" value="2024-12-31" />
+            <input type="date" id="end_date" name="end_date" />
           </div>
           <div id="interval-group">
             <label>Interval</label>
@@ -108,6 +125,7 @@
             <label>Data Source</label>
             <select id="data_source" name="data_source">
               <option value="yahoo" selected>Yahoo Finance</option>
+              <option value="mt5">MetaTrader5 (XAUUSD - Accurate 1-min)</option>
               <option value="binance">Binance API (Crypto)</option>
               <option value="tweleve_data">12data API (Crypto, Forex, Stocks)</option>
               <option value="upload">Upload CSV File</option>
@@ -124,15 +142,10 @@
             <label>Initial Capital</label>
             <input type="number" id="initial_capital" name="initial_capital" value="100000" />
           </div>
-          <div>
-            <label>Risk Per Trade (%) <span id="risk-preview" style="color:#2ecc71;font-weight:700;"></span></label>
-            <input type="number" id="risk_per_trade" name="risk_per_trade" value="100" min="0" max="100" step="0.5" />
-            <small style="color:#bcd2e8;display:block;margin-top:4px;">Maximum loss as % of account capital per trade</small>
-          </div>
-          <div id="forex-risk-group" style="display:none;">
-            <label>Forex Risk Per Trade (%) <span id="forex-risk-preview" style="color:#ffd700;font-weight:700;"></span></label>
-            <input type="number" id="forex_risk_per_trade" name="forex_risk_per_trade" value="100" min="0" max="100" step="0.5" />
-            <small style="color:#bcd2e8;display:block;margin-top:4px;">Maximum loss as % of account capital per trade (Forex only)</small>
+          <div id="risk-per-trade-group">
+            <label>Risk Per Trade (%) <span id="risk-preview" style="color:#ffd700;font-weight:700;"></span></label>
+            <input type="number" id="risk_per_trade" name="risk_per_trade" value="5" min="0" max="100" step="0.5" />
+            <small style="color:#bcd2e8;display:block;margin-top:4px;">Maximum loss % per trade (based on entry capital)</small>
           </div>
           <div id="lot-size-group" style="display:none;">
             <label>Lot Size (Forex)</label>
@@ -148,86 +161,84 @@
       const marketOptions = {{ markets | tojson }};
       const symbolSelect = document.getElementById('symbol');
       const marketSelect = document.getElementById('market');
-      const lotSizeGroup = document.getElementById('lot-size-group');
-      const forexRiskGroup = document.getElementById('forex-risk-group');
       const dataSourceSelect = document.getElementById('data_source');
       const fileUploadGroup = document.getElementById('file-upload-group');
-      const startDateInput = document.getElementById('start_date').parentElement;
-      const endDateInput = document.getElementById('end_date').parentElement;
+      const lotSizeGroup = document.getElementById('lot-size-group');
+      const startDateGroup = document.getElementById('start-date-group');
+      const endDateGroup = document.getElementById('end-date-group');
       const intervalGroup = document.getElementById('interval-group');
-      
+      const capitalInput = document.getElementById('initial_capital');
+      const riskInput = document.getElementById('risk_per_trade');
+      const riskPreview = document.getElementById('risk-preview');
+
+      // Set default dates: start = 3 years ago, end = today
+      (function() {
+        const today = new Date();
+        const threeYearsAgo = new Date();
+        threeYearsAgo.setFullYear(today.getFullYear() - 3);
+        const fmt = function(d) { return d.toISOString().split('T')[0]; };
+        document.getElementById('start_date').value = fmt(threeYearsAgo);
+        document.getElementById('end_date').value = fmt(today);
+      })();
+
       function populateSymbols() {
         const market = marketSelect.value;
         symbolSelect.innerHTML = '';
-        marketOptions[market].forEach(option => {
+        marketOptions[market].forEach(function(option) {
           const opt = document.createElement('option');
           opt.value = option.value;
           opt.textContent = option.label;
           symbolSelect.appendChild(opt);
         });
         lotSizeGroup.style.display = market === 'forex' ? 'block' : 'none';
-        forexRiskGroup.style.display = market === 'forex' ? 'block' : 'none';
+        autoSelectDataSource();
+        updateRiskPreview();
       }
-      
+
+      function autoSelectDataSource() {
+        const market = marketSelect.value;
+        const selectedVal = symbolSelect.value;
+        const options = marketOptions[market] || [];
+        const found = options.find(function(o) { return o.value === selectedVal; });
+        if (found && found.source) {
+          dataSourceSelect.value = found.source;
+        }
+      }
+
+      function updateRiskPreview() {
+        const capital = Number(capitalInput.value) || 100000;
+        const market = marketSelect.value;
+        const currency = market === 'india' ? '\u20b9' : '$';
+        const risk = Number(riskInput.value) || 5;
+        const maxLoss = capital * (risk / 100);
+        riskPreview.textContent = '(Max Loss: ' + currency + maxLoss.toLocaleString() + ')';
+      }
+
+      symbolSelect.addEventListener('change', autoSelectDataSource);
       marketSelect.addEventListener('change', populateSymbols);
-      marketSelect.addEventListener('change', updateRiskPreview);
-      
+      riskInput.addEventListener('input', updateRiskPreview);
+      capitalInput.addEventListener('input', function() {
+        updateRiskPreview();
+        document.getElementById('results').style.display = 'none';
+      });
+
       dataSourceSelect.addEventListener('change', function() {
         const isUpload = dataSourceSelect.value === 'upload';
         fileUploadGroup.style.display = isUpload ? 'block' : 'none';
-        startDateInput.style.display = isUpload ? 'none' : 'block';
-        endDateInput.style.display = isUpload ? 'none' : 'block';
+        startDateGroup.style.display = isUpload ? 'none' : 'block';
+        endDateGroup.style.display = isUpload ? 'none' : 'block';
         intervalGroup.style.display = isUpload ? 'none' : 'block';
       });
-      
+
       populateSymbols();
-      
-      const riskInput = document.getElementById('risk_per_trade');
-      const forexRiskInput = document.getElementById('forex_risk_per_trade');
-      const capitalInput = document.getElementById('initial_capital');
-      const riskPreview = document.getElementById('risk-preview');
-      const forexRiskPreview = document.getElementById('forex-risk-preview');
-      
-      function updateRiskPreview() {
-        const capital = Number(capitalInput.value || 100000);
-        const risk = Number(riskInput.value || 100);
-        const maxLoss = capital * (risk / 100);
-        const market = document.getElementById('market').value;
-        const currency = market === 'india' ? '₹' : '$';
-        riskPreview.textContent = `(Max Loss: ${currency}${maxLoss.toLocaleString()})`;
-        
-        // Update Forex risk preview if visible
-        if (market === 'forex') {
-          const forexRisk = Number(forexRiskInput.value || 100);
-          const forexMaxLoss = capital * (forexRisk / 100);
-          forexRiskPreview.textContent = `(Max Loss: $${forexMaxLoss.toLocaleString()})`;
-        }
-      }
-      
-      riskInput.addEventListener('input', updateRiskPreview);
-      forexRiskInput.addEventListener('input', updateRiskPreview);
-      capitalInput.addEventListener('input', function() {
-        updateRiskPreview();
-        // Clear previous results when user changes input
-        document.getElementById('results').style.display = 'none';
-      });
-      updateRiskPreview();
-      
-      document.getElementById('backtestForm').addEventListener('submit', async (e) => {
+
+      document.getElementById('backtestForm').addEventListener('submit', async function(e) {
         e.preventDefault();
         const results = document.getElementById('results');
         const formData = new FormData(e.target);
         const dataSource = formData.get('data_source');
         const startDate = formData.get('start_date');
         const endDate = formData.get('end_date');
-        
-        // Log the form data being sent (for debugging)
-        console.log('Form data:', {
-          initial_capital: formData.get('initial_capital'),
-          risk_per_trade: formData.get('risk_per_trade'),
-          market: formData.get('market'),
-          data_source: dataSource
-        });
 
         if (dataSource !== 'upload' && startDate && endDate && startDate > endDate) {
           results.style.display = 'block';
@@ -243,27 +254,20 @@
           if (dataSource === 'upload') {
             const fileInput = document.getElementById('data_file');
             if (!fileInput.files || fileInput.files.length === 0) {
-              data = { success: false, error: 'Please select a file' };
+              data = { success: false, error: 'Please select a file to upload.' };
             } else {
               const uploadFormData = new FormData();
               uploadFormData.append('csv_file', fileInput.files[0]);
               uploadFormData.append('market', formData.get('market'));
               uploadFormData.append('initial_capital', formData.get('initial_capital'));
-              const market = formData.get('market');
-              const riskValue = market === 'forex' ? formData.get('forex_risk_per_trade') : formData.get('risk_per_trade');
-              uploadFormData.append('risk_per_trade', riskValue);
-              uploadFormData.append('lot_size', formData.get('lot_size'));
+              uploadFormData.append('risk_per_trade', formData.get('risk_per_trade'));
+              uploadFormData.append('lot_size', formData.get('lot_size') || '0.10');
               uploadFormData.append('data_source', 'upload');
-              
-              const response = await fetch('/run-backtest', {
-                method: 'POST',
-                body: uploadFormData,
-              });
+              const response = await fetch('/run-backtest', { method: 'POST', body: uploadFormData });
               data = await response.json();
             }
           } else {
             const market = formData.get('market');
-            const riskValue = market === 'forex' ? formData.get('forex_risk_per_trade') : formData.get('risk_per_trade');
             const payload = {
               market: market,
               symbol: formData.get('symbol'),
@@ -271,79 +275,84 @@
               start_date: formData.get('start_date'),
               end_date: formData.get('end_date'),
               interval: formData.get('interval'),
-              data_source: formData.get('data_source'),
+              data_source: dataSource,
               initial_capital: Number(formData.get('initial_capital')),
-              risk_per_trade: Number(riskValue),
-              lot_size: Number(formData.get('lot_size'))
+              risk_per_trade: Number(formData.get('risk_per_trade')),
+              lot_size: Number(formData.get('lot_size') || 0.10)
             };
-            
-            console.log('Sending JSON payload:', payload);
-            
+            console.log('Sending payload:', payload);
             const response = await fetch('/run-backtest', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
+              body: JSON.stringify(payload)
             });
             data = await response.json();
-            console.log('Response data:', data);
           }
         } catch (err) {
           data = { success: false, error: err.message };
-          console.error('Error:', err);
+          console.error('Fetch error:', err);
         }
 
         if (!data.success) {
-          results.innerHTML = `<strong class="error">Error:</strong> ${data.error}`;
+          results.innerHTML = '<strong class="error">Error:</strong> ' + (data.error || 'Unknown error');
           return;
         }
 
         const summary = data.summary || {};
         const trades = Array.isArray(data.trade_log) ? data.trade_log : [];
-        const tradeRows = trades.map((trade, index) => {
-          const isWin = trade.is_win;
+        const currency = data.currency || '$';
+
+        const tradeRows = trades.map(function(trade, index) {
           const pnlClass = (trade.pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
-          const rowClass = isWin ? 'win-row' : 'loss-row';
-          return `<tr class="${rowClass}">
-            <td>${index + 1}</td>
-            <td>${trade.entry_signal_bar || ''}</td>
-            <td>${trade.entry_time || ''}</td>
-            <td>${trade.exit_signal_bar || ''}</td>
-            <td>${trade.exit_time || ''}</td>
-            <td style="text-transform:uppercase;font-weight:700;">${trade.direction || ''}</td>
-            <td><strong>${data.currency}${trade.entry_price != null ? trade.entry_price.toFixed(2) : ''}</strong></td>
-            <td><strong>${data.currency}${trade.exit_price != null ? trade.exit_price.toFixed(2) : ''}</strong></td>
-            <td class="${pnlClass}"><strong>${data.currency}${trade.pnl != null ? trade.pnl.toFixed(2) : ''}</strong></td>
-            <td class="${pnlClass}">${trade.pnl_pct != null ? trade.pnl_pct.toFixed(2) + '%' : ''}</td>
-            <td>${data.currency}${trade.equity_after != null ? trade.equity_after.toFixed(2) : ''}</td>
-            <td style="font-weight:700;">${isWin ? 'Win' : 'Loss'}</td>
-          </tr>`;
+          const rowClass = trade.is_win ? 'win-row' : 'loss-row';
+          return '<tr class="' + rowClass + '">' +
+            '<td>' + (index + 1) + '</td>' +
+            '<td>' + (trade.entry_signal_bar || '') + '</td>' +
+            '<td>' + (trade.entry_time || '') + '</td>' +
+            '<td>' + (trade.exit_signal_bar || '') + '</td>' +
+            '<td>' + (trade.exit_time || '') + '</td>' +
+            '<td style="text-transform:uppercase;font-weight:700;">' + (trade.direction || '') + '</td>' +
+            '<td><strong>' + currency + (trade.entry_price != null ? trade.entry_price.toFixed(2) : '') + '</strong></td>' +
+            '<td><strong>' + currency + (trade.exit_price != null ? trade.exit_price.toFixed(2) : '') + '</strong></td>' +
+            '<td class="' + pnlClass + '"><strong>' + currency + (trade.pnl != null ? trade.pnl.toFixed(2) : '') + '</strong></td>' +
+            '<td class="' + pnlClass + '">' + (trade.pnl_pct != null ? trade.pnl_pct.toFixed(2) + '%' : '') + '</td>' +
+            '<td>' + currency + (trade.equity_after != null ? trade.equity_after.toFixed(2) : '') + '</td>' +
+            '<td style="font-weight:700;">' + (trade.is_win ? 'Win' : 'Loss') + '</td>' +
+            '</tr>';
         }).join('');
 
-        results.innerHTML = `<h3>${data.symbol_label || data.symbol}</h3>
-          <p class="muted">Market: ${data.market_label} | Currency: ${data.currency_code} | Source: ${data.source}</p>
-          ${data.date_range ? `<p class="muted">Date Range: ${data.date_range}</p>` : ''}
-          ${summary.trades_limited ? `<p class="muted" style="color:#ffd700;">Showing last ${summary.trades_displayed} of ${summary.trades} trades</p>` : ''}
-          <div class="metrics">
-            <div class="metric"><strong>Trades</strong><br>${summary.trades || 0}</div>
-            <div class="metric"><strong>Wins</strong><br>${summary.wins || 0}</div>
-            <div class="metric"><strong>Losses</strong><br>${summary.losses || 0}</div>
-            <div class="metric"><strong>Accuracy</strong><br>${summary.accuracy || 0}%</div>
-            <div class="metric"><strong>Total PnL</strong><br><span class="${(summary.total_pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative'}">${data.currency}${(summary.total_pnl || 0).toLocaleString()}</span></div>
-            <div class="metric"><strong>Avg PnL</strong><br><span class="${(summary.avg_pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative'}">${data.currency}${(summary.avg_pnl || 0).toLocaleString()}</span></div>
-            <div class="metric"><strong>Max Drawdown</strong><br>${summary.max_drawdown || 0}%</div>
-            <div class="metric"><strong>Ending Equity</strong><br>${data.currency}${(summary.ending_equity || 0).toLocaleString()}</div>
-          </div>
-          ${trades.length > 0 ? `<div class="section-title">Trade Log</div>
-            <div class="table-container">
-              <table class="trade-table">
-                <thead><tr>
-                  <th>#</th><th>Signal Time</th><th>Entry Time</th><th>Exit Signal Time</th>
-                  <th>Exit Time</th><th>Direction</th><th>Entry Price</th><th>Exit Price</th>
-                  <th>PnL</th><th>PnL %</th><th>Equity After</th><th>Result</th>
-                </tr></thead>
-                <tbody>${tradeRows}</tbody>
-              </table>
-            </div>` : '<p class="muted">No trades generated</p>'}`;
+        const totalPnl = summary.total_pnl || 0;
+        const avgPnl = summary.avg_pnl || 0;
+        const endingEquity = summary.ending_equity || 0;
+
+        results.innerHTML =
+          '<h3>' + (data.symbol_label || data.symbol || '') + '</h3>' +
+          '<p class="muted">Market: ' + (data.market_label || '') + ' | Currency: ' + (data.currency_code || '') + ' | Source: ' + (data.source || '') + '</p>' +
+          (data.date_range ? '<p class="muted">Date Range: ' + data.date_range + '</p>' : '') +
+          (summary.trades_limited ? '<p class="muted" style="color:#ffd700;">Showing last ' + summary.trades_displayed + ' of ' + summary.trades + ' trades</p>' : '') +
+          '<div class="metrics">' +
+            '<div class="metric"><strong>Trades</strong><br>' + (summary.trades || 0) + '</div>' +
+            '<div class="metric"><strong>Wins</strong><br>' + (summary.wins || 0) + '</div>' +
+            '<div class="metric"><strong>Losses</strong><br>' + (summary.losses || 0) + '</div>' +
+            '<div class="metric"><strong>Accuracy</strong><br>' + (summary.accuracy || 0) + '%</div>' +
+            '<div class="metric"><strong>Total PnL</strong><br><span class="' + (totalPnl >= 0 ? 'pnl-positive' : 'pnl-negative') + '">' + currency + totalPnl.toLocaleString() + '</span></div>' +
+            '<div class="metric"><strong>Avg PnL</strong><br><span class="' + (avgPnl >= 0 ? 'pnl-positive' : 'pnl-negative') + '">' + currency + avgPnl.toLocaleString() + '</span></div>' +
+            '<div class="metric"><strong>Max Drawdown</strong><br>' + (summary.max_drawdown || 0) + '%</div>' +
+            '<div class="metric"><strong>Ending Equity</strong><br>' + currency + endingEquity.toLocaleString() + '</div>' +
+          '</div>' +
+          (trades.length > 0 ?
+            '<div class="section-title">Trade Log</div>' +
+            '<div class="table-container">' +
+              '<table class="trade-table">' +
+                '<thead><tr>' +
+                  '<th>#</th><th>Signal Time</th><th>Entry Time</th><th>Exit Signal Time</th>' +
+                  '<th>Exit Time</th><th>Direction</th><th>Entry Price</th><th>Exit Price</th>' +
+                  '<th>PnL</th><th>PnL %</th><th>Equity After</th><th>Result</th>' +
+                '</tr></thead>' +
+                '<tbody>' + tradeRows + '</tbody>' +
+              '</table>' +
+            '</div>'
+            : '<p class="muted">No trades generated for this period.</p>');
       });
     </script>
   </body>
