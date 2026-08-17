@@ -1342,37 +1342,29 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                 
             # LONG signal: EMA50 crosses above EMA100
             if prev50 <= prev100 and curr50 > curr100:
-                # Verify EMA alignment for valid trend: EMA20 > EMA50 > EMA100 after crossover
-                if curr20 > curr50 and curr50 > curr100:
-                    print(f"[SIGNAL] LONG at bar {i}: EMA50 crossed above EMA100 (prev50={prev50:.2f} <= prev100={prev100:.2f}, curr50={curr50:.2f} > curr100={curr100:.2f})")
-                    print(f"          EMA Alignment confirmed: EMA20={curr20:.2f} > EMA50={curr50:.2f} > EMA100={curr100:.2f}")
-                    pending_entry_direction = "long"
-                    entry_signal_bar = idx
-                    signal_bar_data = {
-                        "close": close if not math.isnan(close) else None,
-                        "ema20": curr20 if not math.isnan(curr20) else None,
-                        "ema50": curr50 if not math.isnan(curr50) else None,
-                        "ema100": curr100 if not math.isnan(curr100) else None,
-                    }
-                else:
-                    print(f"[REJECTED] LONG at bar {i}: EMA50 crossed EMA100 BUT alignment wrong (EMA20={curr20:.2f}, EMA50={curr50:.2f}, EMA100={curr100:.2f})")
+                print(f"[SIGNAL] LONG at bar {i}: EMA50 crossed above EMA100 (prev50={prev50:.2f} <= prev100={prev100:.2f}, curr50={curr50:.2f} > curr100={curr100:.2f})")
+                print(f"          EMA Values: EMA20={curr20:.2f}, EMA50={curr50:.2f}, EMA100={curr100:.2f}")
+                pending_entry_direction = "long"
+                entry_signal_bar = idx
+                signal_bar_data = {
+                    "close": close if not math.isnan(close) else None,
+                    "ema20": curr20 if not math.isnan(curr20) else None,
+                    "ema50": curr50 if not math.isnan(curr50) else None,
+                    "ema100": curr100 if not math.isnan(curr100) else None,
+                }
                     
             # SHORT signal: EMA50 crosses below EMA100
             elif prev50 >= prev100 and curr50 < curr100:
-                # Verify EMA alignment for valid trend: EMA20 < EMA50 < EMA100 after crossover
-                if curr20 < curr50 and curr50 < curr100:
-                    print(f"[SIGNAL] SHORT at bar {i}: EMA50 crossed below EMA100 (prev50={prev50:.2f} >= prev100={prev100:.2f}, curr50={curr50:.2f} < curr100={curr100:.2f})")
-                    print(f"          EMA Alignment confirmed: EMA20={curr20:.2f} < EMA50={curr50:.2f} < EMA100={curr100:.2f}")
-                    pending_entry_direction = "short"
-                    entry_signal_bar = idx
-                    signal_bar_data = {
-                        "close": close if not math.isnan(close) else None,
-                        "ema20": curr20 if not math.isnan(curr20) else None,
-                        "ema50": curr50 if not math.isnan(curr50) else None,
-                        "ema100": curr100 if not math.isnan(curr100) else None,
-                    }
-                else:
-                    print(f"[REJECTED] SHORT at bar {i}: EMA50 crossed EMA100 BUT alignment wrong (EMA20={curr20:.2f}, EMA50={curr50:.2f}, EMA100={curr100:.2f})")
+                print(f"[SIGNAL] SHORT at bar {i}: EMA50 crossed below EMA100 (prev50={prev50:.2f} >= prev100={prev100:.2f}, curr50={curr50:.2f} < curr100={curr100:.2f})")
+                print(f"          EMA Values: EMA20={curr20:.2f}, EMA50={curr50:.2f}, EMA100={curr100:.2f}")
+                pending_entry_direction = "short"
+                entry_signal_bar = idx
+                signal_bar_data = {
+                    "close": close if not math.isnan(close) else None,
+                    "ema20": curr20 if not math.isnan(curr20) else None,
+                    "ema50": curr50 if not math.isnan(curr50) else None,
+                    "ema100": curr100 if not math.isnan(curr100) else None,
+                }
                 
         # Detect exit signals at CLOSE of current bar
         elif position == 1 and not pending_exit_signal:
