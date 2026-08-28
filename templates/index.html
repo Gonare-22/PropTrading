@@ -72,6 +72,8 @@
       }
       button { background: linear-gradient(135deg,#27ae60,#2ecc71); color: white; font-weight: 700; cursor: pointer; margin-top: 8px; border: none; }
       button:hover { opacity: 0.9; }
+      .btn-export { background: linear-gradient(135deg,#1a6fa8,#2196f3); color: white; font-weight: 700; cursor: pointer; border: none; padding: 10px 20px; border-radius: 10px; margin-top: 14px; width: auto; display: inline-block; }
+      .btn-export:hover { opacity: 0.85; }
       .result { margin-top: 20px; padding: 16px; border-radius: 12px; background: rgba(0,0,0,0.18); }
       .metrics { display: grid; grid-template-columns: repeat(auto-fit,minmax(140px,1fr)); gap: 12px; margin-top: 12px; }
       .metric { background: linear-gradient(135deg, rgba(255,255,255,0.18), rgba(255,255,255,0.08)); padding: 18px; border-radius: 14px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); }
@@ -157,6 +159,7 @@
       <div id="results" class="result" style="display:none;"></div>
     </div>
 
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
     <script>
       const marketOptions = {{ markets | tojson }};
       const symbolSelect = document.getElementById('symbol');
@@ -174,10 +177,10 @@
       // Set default dates: start = 3 years ago, end = today
       (function() {
         const today = new Date();
-        const threeYearsAgo = new Date();
-        threeYearsAgo.setFullYear(today.getFullYear() - 3);
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(today.getDate() - 7);
         const fmt = function(d) { return d.toISOString().split('T')[0]; };
-        document.getElementById('start_date').value = fmt(threeYearsAgo);
+        document.getElementById('start_date').value = fmt(sevenDaysAgo);
         document.getElementById('end_date').value = fmt(today);
       })();
 
@@ -231,6 +234,96 @@
       });
 
       populateSymbols();
+
+      // Store last result data for export
+      let lastTradeData = [];
+      let lastSummaryData = {};
+      let lastResultMeta = {};
+
+      function exportToExcel() {
+        if (!lastTradeData || lastTradeData.length === 0) {
+          alert('No trade data to export.');
+          return;
+        }
+
+        const wb = XLSX.utils.book_new();
+
+        // --- Sheet 1: Summary ---
+        const s = lastSummaryData;
+        const m = lastResultMeta;
+        const summaryRows = [
+          ['EMA 20/50 Strategy Backtest Report'],
+          [],
+          ['Symbol',        m.symbol_label || m.symbol || ''],
+          ['Market',        m.market_label || ''],
+          ['Data Source',   m.source || ''],
+          ['Date Range',    m.date_range || ''],
+          ['Currency',      m.currency_code || ''],
+          [],
+          ['--- Performance Summary ---'],
+          ['Total Trades',    s.trades || 0],
+          ['Winning Trades',  s.wins   || 0],
+          ['Losing Trades',   s.losses || 0],
+          ['Win Rate (%)',     s.accuracy || 0],
+          ['Total PnL',       s.total_pnl || 0],
+          ['Avg PnL / Trade', s.avg_pnl || 0],
+          ['Max Drawdown (%)',s.max_drawdown || 0],
+          ['Initial Capital', s.initial_capital || 0],
+          ['Ending Equity',   s.ending_equity || 0],
+        ];
+        const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+        wsSummary['!cols'] = [{wch:22},{wch:30}];
+        XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+
+        // --- Sheet 2: Trade Log ---
+        const headers = [
+          '#','Signal Time','Entry Time','Exit Signal Time','Exit Time',
+          'Direction','Entry Price','Exit Price',
+          'PnL','PnL %','Position Size','Capital Used',
+          'Risk %','Equity After','Result',
+          'Entry EMA20','Entry EMA50','Exit EMA20','Exit EMA50'
+        ];
+        const rows = lastTradeData.map(function(t, i) {
+          return [
+            i + 1,
+            t.entry_signal_bar || '',
+            t.entry_time || '',
+            t.exit_signal_bar || '',
+            t.exit_time || '',
+            (t.direction || '').toUpperCase(),
+            t.entry_price != null ? t.entry_price : '',
+            t.exit_price  != null ? t.exit_price  : '',
+            t.pnl         != null ? t.pnl         : '',
+            t.pnl_pct     != null ? t.pnl_pct     : '',
+            t.position_size != null ? t.position_size : '',
+            t.capital_used  != null ? t.capital_used  : '',
+            t.risk_pct      != null ? t.risk_pct      : '',
+            t.equity_after  != null ? t.equity_after  : '',
+            t.is_win ? 'Win' : 'Loss',
+            t.signal_bar_ema20 != null ? t.signal_bar_ema20 : '',
+            t.signal_bar_ema50 != null ? t.signal_bar_ema50 : '',
+            t.exit_signal_ema20 != null ? t.exit_signal_ema20 : '',
+            t.exit_signal_ema50 != null ? t.exit_signal_ema50 : '',
+          ];
+        });
+        const wsTradeLog = XLSX.utils.aoa_to_sheet([headers].concat(rows));
+        wsTradeLog['!cols'] = [
+          {wch:4},{wch:22},{wch:22},{wch:22},{wch:22},
+          {wch:10},{wch:13},{wch:13},
+          {wch:12},{wch:10},{wch:14},{wch:14},
+          {wch:8},{wch:14},{wch:8},
+          {wch:12},{wch:12},{wch:12},{wch:12}
+        ];
+        XLSX.utils.book_append_sheet(wb, wsTradeLog, 'Trade Log');
+
+        // Generate filename with symbol + date
+        const now = new Date();
+        const dateStr = now.toISOString().slice(0,10);
+        const symbolStr = (m.symbol || 'backtest').replace(/[^a-zA-Z0-9]/g, '_');
+        const filename = 'EMA_20_50_' + symbolStr + '_' + dateStr + '.xlsx';
+
+        XLSX.writeFile(wb, filename);
+      }
 
       document.getElementById('backtestForm').addEventListener('submit', async function(e) {
         e.preventDefault();
@@ -302,6 +395,11 @@
         const trades = Array.isArray(data.trade_log) ? data.trade_log : [];
         const currency = data.currency || '$';
 
+        // Store for export
+        lastTradeData = trades;
+        lastSummaryData = summary;
+        lastResultMeta = data;
+
         const tradeRows = trades.map(function(trade, index) {
           const pnlClass = (trade.pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
           const rowClass = trade.is_win ? 'win-row' : 'loss-row';
@@ -336,12 +434,14 @@
             '<div class="metric"><strong>Losses</strong><br>' + (summary.losses || 0) + '</div>' +
             '<div class="metric"><strong>Accuracy</strong><br>' + (summary.accuracy || 0) + '%</div>' +
             '<div class="metric"><strong>Total PnL</strong><br><span class="' + (totalPnl >= 0 ? 'pnl-positive' : 'pnl-negative') + '">' + currency + totalPnl.toLocaleString() + '</span></div>' +
-            '<div class="metric"><strong>Avg PnL</strong><br><span class="' + (avgPnl >= 0 ? 'pnl-positive' : 'pnl-negative') + '">' + currency + avgPnl.toLocaleString() + '</span></div>' +
             '<div class="metric"><strong>Max Drawdown</strong><br>' + (summary.max_drawdown || 0) + '%</div>' +
             '<div class="metric"><strong>Ending Equity</strong><br>' + currency + endingEquity.toLocaleString() + '</div>' +
           '</div>' +
           (trades.length > 0 ?
-            '<div class="section-title">Trade Log</div>' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">' +
+              '<div class="section-title" style="margin-top:24px;">Trade Log</div>' +
+              '<button class="btn-export" onclick="exportToExcel()">⬇ Export to Excel</button>' +
+            '</div>' +
             '<div class="table-container">' +
               '<table class="trade-table">' +
                 '<thead><tr>' +

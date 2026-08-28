@@ -1136,9 +1136,10 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
     entry_time = None
     entry_direction = None
     entry_units = 0.0
+    entry_equity = float(initial_capital)  # Equity snapshot at trade entry (for compounding risk)
     entry_signal_bar = None
     exit_signal_bar = None
-    stop_loss_price = None  # NEW: Track stop loss level
+    stop_loss_price = None  # Track stop loss level
     
     # Store signal bar EMAs and prices for manual verification
     signal_bar_data = None
@@ -1166,7 +1167,10 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
         curr20, curr50 = float(row["ema20"]), float(row["ema50"])
 
         # Check if stop loss is hit (for active positions)
-        # Loss % is calculated against INITIAL CAPITAL for the trade
+        # Rule:
+        #   - Equity grew  (equity > initial_capital) → risk % of initial_capital (cap the risk, don't over-expose)
+        #   - Equity shrank (equity < initial_capital) → risk % of current equity   (protect remaining capital)
+        # Formula: max_loss = min(initial_capital, equity) * risk%
         if position != 0:
             # Calculate unrealized loss based on worst price during candle
             if position == 1:  # LONG position
@@ -1175,28 +1179,26 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
             else:  # SHORT position
                 worst_price = high_price
                 unrealized_loss = entry_units * (worst_price - entry_price)
-            
-            # Calculate loss % against INITIAL CAPITAL (not current equity)
-            unrealized_loss_pct = (unrealized_loss / initial_capital) * 100.0
-            
-            # Check if unrealized loss exceeds risk limit
-            if risk_per_trade < 100 and unrealized_loss_pct >= risk_per_trade:
-                # Stop loss hit - calculate exit price to match exact risk % of INITIAL CAPITAL
-                max_loss_amount = initial_capital * (risk_per_trade / 100.0)
-                
+
+            # Stop loss dollar amount uses the LOWER of initial_capital and current equity
+            sl_basis = min(initial_capital, equity)
+            max_loss_amount = sl_basis * (risk_per_trade / 100.0)
+
+            # Check if unrealized loss hits the stop
+            if risk_per_trade < 100 and unrealized_loss >= max_loss_amount:
+                # Exit at the exact stop loss price
                 if position == 1:  # LONG
                     exit_price = entry_price - (max_loss_amount / entry_units)
                 else:  # SHORT
                     exit_price = entry_price + (max_loss_amount / entry_units)
-                
-                # Exit due to stop loss
+
                 if position == 1:
                     pnl = entry_units * (exit_price - entry_price)
                 else:
                     pnl = entry_units * (entry_price - exit_price)
-                
+
                 equity += pnl
-                pnl_pct = (pnl / initial_capital) * 100.0
+                pnl_pct = (pnl / sl_basis) * 100.0
                 
                 trades.append({
                     "entry_signal_bar": entry_signal_bar,
@@ -1222,7 +1224,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                     "exit_signal_ema50": curr50,
                 })
                 
-                print(f"[STOP LOSS] Hit at {idx}: {entry_direction.upper()} closed at ${exit_price:.2f}, loss: ${abs(pnl):.2f} ({abs(pnl_pct):.2f}% of initial capital)")
+                print(f"[STOP LOSS] Hit at {idx}: {entry_direction.upper()} closed at ${exit_price:.2f}, loss: ${abs(pnl):.2f} ({risk_per_trade}% of ${sl_basis:.2f} = ${max_loss_amount:.2f})")
                 
                 position = 0
                 entry_price = None
@@ -1238,8 +1240,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                 continue  # Skip normal exit logic
 
         # Detect EMA20/50 crossovers at CLOSE of current bar
-        # Skip warmup period to avoid false signals
-        if i < EMA_WARMUP_BARS:
+        if pd.isna(row["prev_ema20"]) or pd.isna(row["prev_ema50"]):
             continue
         
         crossover_signal = None
@@ -1267,7 +1268,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                         pnl = entry_units * (entry_price - exit_price)
                     
                     equity += pnl
-                    pnl_pct = (pnl / initial_capital) * 100.0
+                    pnl_pct = (pnl / entry_equity) * 100.0
                     
                     trades.append({
                         "entry_signal_bar": entry_signal_bar,
@@ -1300,6 +1301,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                     entry_time = None
                     entry_direction = None
                     entry_units = 0.0
+                    entry_equity = equity  # Reset to current equity for next trade
                     entry_signal_bar = None
                     signal_bar_data = None
                 else:
@@ -1312,20 +1314,26 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
             entry_price = close
             entry_direction = crossover_signal
             entry_signal_bar = idx
-            
-            # Calculate position size
+            entry_equity = equity  # Snapshot equity at entry for reference
+
+            # Stop loss basis: lower of initial_capital and current equity
+            # (cap risk when up, protect when down)
+            sl_basis_entry = min(initial_capital, equity)
+
+            # Calculate position size based on stop loss basis and risk %
             if use_lot_size and lot_value is not None and market == "forex":
                 entry_units = lot_value * 100
             else:
-                trade_capital = equity * 0.01
+                # Size position so that max_loss = sl_basis * risk%
+                max_loss_amount = sl_basis_entry * (risk_per_trade / 100.0) if risk_per_trade < 100 else sl_basis_entry
+                trade_capital = sl_basis_entry * (risk_per_trade / 100.0) if risk_per_trade < 100 else equity
                 entry_units = trade_capital / entry_price
-            
-            # Calculate stop loss
+
+            # Calculate stop loss price
             if risk_per_trade == 100:
                 stop_loss_price = None
-                max_loss_amount = None
             else:
-                max_loss_amount = equity * (risk_per_trade / 100.0)
+                max_loss_amount = sl_basis_entry * (risk_per_trade / 100.0)
                 price_distance = max_loss_amount / entry_units
                 if entry_direction == "long":
                     stop_loss_price = entry_price - price_distance
@@ -1351,7 +1359,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
             pnl = entry_units * (entry_price - last_close)
         
         equity += pnl
-        pnl_pct = (pnl / initial_capital) * 100.0
+        pnl_pct = (pnl / entry_equity) * 100.0
         
         trades.append({
             "entry_signal_bar": entry_signal_bar,
@@ -1672,6 +1680,21 @@ async def run_backtest(
             print(f"⚠️ Large dataset detected ({len(df):,} rows). Computing EMAs...")
         
         df = compute_emas(df)
+
+        # Trim data to the user's requested start date AFTER computing EMAs.
+        # EMAs need prior bars to warm up, but the user should only see data
+        # from the date they actually selected — no earlier candles in trades/display.
+        if data_source_val != "upload" and start_date:
+            user_start = pd.Timestamp(start_date).normalize()
+            rows_before = len(df)
+            df = df[df.index >= user_start]
+            trimmed = rows_before - len(df)
+            if trimmed > 0:
+                print(f"✓ Trimmed {trimmed} warmup rows before {user_start.date()} — strategy starts from your selected date")
+
+        if df.empty:
+            raise ValueError("No data available for the selected date range after processing.")
+
         print(f"✓ Computed EMAs, starting backtest with {len(df):,} rows...")
         
         result = run_strategy(df, initial_capital, market=market, lot_size=lot_size_val, risk_per_trade=risk_per_trade_val)
