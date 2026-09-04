@@ -1294,7 +1294,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
         
         # ============ UPDATE PERMISSION STATE ============
         # Long Permission Logic:
-        # - Activate when K crosses/reaches 78 or above (tolerance for extra margin)
+        # - Activate when K crosses/reaches 78 or above
         # - Stay active while K > 50
         # - Deactivate when K crosses below 50
         if curr_stoch_k >= 78:
@@ -1308,7 +1308,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                 print(f"[PERM] Bar {i}: Long permission DEACTIVATED at {idx} (Stoch RSI K = {curr_stoch_k:.2f} < 50)")
         
         # Short Permission Logic:
-        # - Activate when K crosses/reaches 22 or below (tolerance for extra margin)
+        # - Activate when K crosses/reaches 22 or below
         # - Stay active while K < 50
         # - Deactivate when K crosses above 50
         if curr_stoch_k <= 22:
@@ -1499,7 +1499,7 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
             
             # ============ CHECK ENTRY CONDITIONS ============
             # Long Entry: EMA crossover + long_permission_active + CHOP <= 52
-            # PLUS: Current K must still be >= 78 to enter (lowered threshold for extra margin)
+            # PLUS: Current K must still be >= 78 to enter
             if crossover_signal == "long":
                 perm_info = f"Activated at {long_permission_activated_at}" if long_permission_activated_at else "Never"
                 print(f"[CHECK LONG] EMA=YES, LongPerm={long_permission_active}({perm_info}), CHOP={curr_chop:.2f}<=52?, K={curr_stoch_k:.2f}>=78?")
