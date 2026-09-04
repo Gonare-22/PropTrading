@@ -506,9 +506,17 @@ async def upload_backtest(
         # Process uploaded file
         df = process_uploaded_file(file_content, file.filename)
         
-        # Compute EMAs
+        # Compute all indicators
         df = compute_emas(df)
-        print(f"Computed EMAs, starting backtest...")
+        print(f"✓ Computed EMAs")
+        
+        df = compute_stoch_rsi(df, k=3, d=3, rsi_length=14, stoch_length=14)
+        print(f"✓ Computed Stochastic RSI (K=3, D=3, RSI=14, Length=14 - MT5 DEFAULT)")
+        
+        df = compute_choppiness_index(df, length=14)
+        print(f"✓ Computed Choppiness Index (length=14)")
+        
+        print(f"Starting backtest...")
         
         # Run strategy
         result = run_strategy(df, initial_capital, market=market, risk_per_trade=risk_per_trade, lot_size=lot_size)
@@ -1094,37 +1102,129 @@ def compute_emas(df):
     return df
 
 
-# Minimum candles before any signal is allowed
-# EMA-50 needs ~50 bars to stabilize.
-EMA_WARMUP_BARS = 50
-
-
-def run_strategy(df, initial_capital: float, market: str = "india", lot_size: float | None = None, risk_per_trade: float = 100.0):
+def compute_stoch_rsi(df, k=6, d=6, rsi_length=28, stoch_length=28):
     """
+    Compute Stochastic RSI with exact parameters:
+    - K: 6
+    - D: 6 (SMA of K)
+    - RSI Length: 28
+    - Stochastic Length: 28
+    - Source: Close
+    """
+    df = df.copy()
+    
+    # Step 1: Calculate RSI(28)
+    delta = df["Close"].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=rsi_length).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_length).mean()
+    
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    # Step 2: Calculate Stochastic of RSI
+    lowest_rsi = rsi.rolling(window=stoch_length).min()
+    highest_rsi = rsi.rolling(window=stoch_length).max()
+    
+    stoch_rsi = 100 * (rsi - lowest_rsi) / (highest_rsi - lowest_rsi)
+    
+    # Step 3: K line = SMA(6) of Stochastic RSI
+    k_line = stoch_rsi.rolling(window=k).mean()
+    
+    # Step 4: D line = SMA(6) of K line
+    d_line = k_line.rolling(window=d).mean()
+    
+    df["stoch_rsi_k"] = k_line
+    df["stoch_rsi_d"] = d_line
+    
+    return df
+
+
+def compute_choppiness_index(df, length=14):
+    """
+    Compute Choppiness Index:
+    CHOP = 100 * LOG10(SUM(ATR(1), length) / (MAX(High, length) - MIN(Low, length))) / LOG10(length)
+    
+    Where ATR(1) = True Range
+    """
+    df = df.copy()
+    
+    # Calculate True Range
+    high_low = df["High"] - df["Low"]
+    high_close = abs(df["High"] - df["Close"].shift())
+    low_close = abs(df["Low"] - df["Close"].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    
+    # Sum of True Range over length period
+    atr_sum = tr.rolling(window=length).sum()
+    
+    # Highest High and Lowest Low over length period
+    highest_high = df["High"].rolling(window=length).max()
+    lowest_low = df["Low"].rolling(window=length).min()
+    
+    # Choppiness Index calculation
+    chop = 100 * np.log10(atr_sum / (highest_high - lowest_low)) / np.log10(length)
+    
+    df["chop"] = chop
+    
+    return df
+
+
+# Minimum candles before any signal is allowed
+# Stochastic RSI needs: RSI Length (28) + Stochastic Length (28) = ~28 bars for first valid value
+# Add buffer for EMA stabilization: use 35 bars
+EMA_WARMUP_BARS = 35
+
+
+def run_strategy(df, initial_capital: float, market: str = "india", lot_size: float | None = None, risk_per_trade: float = 100.0, use_trailing_stop: bool = False, trailing_stop_pct: float = 2.0):
+    """
+    XAUUSD 1-Minute Trading Strategy with:
+    - EMA 20/50 Crossover Entry/Exit
+    - Stochastic RSI Permission Logic (K >= 79 for long, K <= 21 for short)
+    - Choppiness Index Filter (CHOP <= 52 for entry)
+    - Optional Trailing Stop Loss
+    
+    Stoch RSI Permission:
+    - Long: Permission active when K >= 79, stays active while K > 50, deactivates when K <= 50
+    - Short: Permission active when K <= 21, stays active while K < 50, deactivates when K >= 50
+    - Entry: EMA crossover + valid permission + CHOP <= 52
+    - Exit: Only EMA crossover (no Stoch RSI or CHOP exit logic)
+    
     Fixed backtest logic with risk management:
     - Signal detected on bar N (EMA crossover at close)
     - Trade executed on bar N+1 open (actual strike price)
     - Risk per trade: percentage of current equity to use per trade
+    - Trailing Stop Loss: Optional - follows price up/down by X% from highest/lowest
     - This avoids look-ahead bias and uses realistic execution prices
+    
+    Parameters:
+    - use_trailing_stop (bool): Enable trailing stop loss
+    - trailing_stop_pct (float): Trailing stop distance in percentage (e.g., 2.0 = 2%)
     """
     print(f"\n{'='*60}")
-    print(f"STRATEGY BACKTEST STARTING")
+    print(f"XAUUSD 1-MINUTE STRATEGY BACKTEST STARTING")
     print(f"Initial Data: {len(df)} candles")
     print(f"Date range: {df.index.min()} to {df.index.max()}")
     print(f"Market: {market}, Initial Capital: {initial_capital}, Risk: {risk_per_trade}%")
     print(f"{'='*60}\n")
     
     df = df.copy()
+    
+    # Compute all indicators
+    print("Computing indicators...")
     df["prev_ema20"] = df["ema20"].shift(1)
     df["prev_ema50"] = df["ema50"].shift(1)
+    df["prev_stoch_rsi_k"] = df["stoch_rsi_k"].shift(1)
+    df["prev_chop"] = df["chop"].shift(1)
     
-    # Debug: Show EMA values
-    print("EMA Debug Info:")
-    print(f"{'Bar':<5} {'DateTime':<20} {'Close':<10} {'EMA20':<10} {'EMA50':<10}")
-    print("-" * 60)
+    # Debug: Show indicator values
+    print("\nIndicator Debug Info:")
+    print(f"{'Bar':<5} {'DateTime':<20} {'Close':<10} {'EMA20':<10} {'EMA50':<10} {'Stoch K':<10} {'CHOP':<10}")
+    print("-" * 85)
     for i, (idx, row) in enumerate(df.iterrows()):
         if i < 10 or i >= len(df) - 5:  # Show first 10 and last 5 rows
-            print(f"{i:<5} {str(idx):<20} {row['Close']:<10.2f} {row['ema20']:<10.2f} {row['ema50']:<10.2f}")
+            stoch_k = f"{row['stoch_rsi_k']:.2f}" if not pd.isna(row['stoch_rsi_k']) else "N/A"
+            chop = f"{row['chop']:.2f}" if not pd.isna(row['chop']) else "N/A"
+            print(f"{i:<5} {str(idx):<20} {row['Close']:<10.2f} {row['ema20']:<10.2f} {row['ema50']:<10.2f} {stoch_k:<10} {chop:<10}")
         elif i == 10:
             print("...")
     print()
@@ -1136,25 +1236,36 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
     entry_time = None
     entry_direction = None
     entry_units = 0.0
-    entry_equity = float(initial_capital)  # Equity snapshot at trade entry (for compounding risk)
+    entry_equity = float(initial_capital)
     entry_signal_bar = None
-    exit_signal_bar = None
-    stop_loss_price = None  # Track stop loss level
+    stop_loss_price = None
     
-    # Store signal bar EMAs and prices for manual verification
+    # Trailing stop loss tracking
+    highest_price_in_trade = None  # Highest price since entry (for LONG trailing stop)
+    lowest_price_in_trade = None   # Lowest price since entry (for SHORT trailing stop)
+    trailing_stop_price = None     # Current trailing stop level
+    
+    # Permission state tracking
+    long_permission_active = False  # Permission to take long entries
+    short_permission_active = False  # Permission to take short entries
+    long_permission_activated_at = None  # When long permission was last activated
+    short_permission_activated_at = None  # When short permission was last activated
+    
     signal_bar_data = None
-    exit_signal_bar_data = None
     
     # Lot sizing ONLY for forex market
-    # For stocks/indices/uploaded data: always use simple position sizing
     use_lot_size = (market == "forex")
     lot_value = float(lot_size or DEFAULT_FOREX_LOT_SIZE) if market == "forex" else None
     
     # Convert risk percentage to decimal
     risk_multiplier = risk_per_trade / 100.0
     
-    print(f"Strategy config: market={market}, use_lot_size={use_lot_size}, lot_value={lot_value}, risk={risk_per_trade}%, initial_capital={initial_capital}")
-    print(f"Warmup Period: Skipping first {EMA_WARMUP_BARS} candles for EMA stabilization")
+    print(f"Strategy config: market={market}, use_lot_size={use_lot_size}, lot_value={lot_value}, risk={risk_per_trade}%")
+    if use_trailing_stop:
+        print(f"Trailing Stop: ENABLED (Trail: {trailing_stop_pct}%)")
+    else:
+        print(f"Fixed Stop Loss: ENABLED (Risk: {risk_per_trade}%)")
+    print(f"Warmup Period: Skipping first {EMA_WARMUP_BARS} candles for indicator stabilization\n")
 
     df_list = list(df.iterrows())
     
@@ -1163,41 +1274,109 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
         open_price = float(row.get("Open", close))
         high_price = float(row.get("High", close))
         low_price = float(row.get("Low", close))
-        prev20, prev50 = float(row["prev_ema20"]), float(row["prev_ema50"])
-        curr20, curr50 = float(row["ema20"]), float(row["ema50"])
-
-        # Check if stop loss is hit (for active positions)
-        # Rule:
-        #   - Equity grew  (equity > initial_capital) → risk % of initial_capital (cap the risk, don't over-expose)
-        #   - Equity shrank (equity < initial_capital) → risk % of current equity   (protect remaining capital)
-        # Formula: max_loss = min(initial_capital, equity) * risk%
+        
+        # EMA values
+        prev20 = float(row["prev_ema20"]) if not pd.isna(row["prev_ema20"]) else None
+        prev50 = float(row["prev_ema50"]) if not pd.isna(row["prev_ema50"]) else None
+        curr20 = float(row["ema20"]) if not pd.isna(row["ema20"]) else None
+        curr50 = float(row["ema50"]) if not pd.isna(row["ema50"]) else None
+        
+        # Stoch RSI values
+        prev_stoch_k = float(row["prev_stoch_rsi_k"]) if not pd.isna(row["prev_stoch_rsi_k"]) else None
+        curr_stoch_k = float(row["stoch_rsi_k"]) if not pd.isna(row["stoch_rsi_k"]) else None
+        
+        # Choppiness Index
+        curr_chop = float(row["chop"]) if not pd.isna(row["chop"]) else None
+        
+        # Skip if we don't have all indicators
+        if any(x is None for x in [prev20, prev50, curr20, curr50, curr_stoch_k, curr_chop]):
+            continue
+        
+        # ============ UPDATE PERMISSION STATE ============
+        # Long Permission Logic:
+        # - Activate when K crosses/reaches 78 or above (tolerance for extra margin)
+        # - Stay active while K > 50
+        # - Deactivate when K crosses below 50
+        if curr_stoch_k >= 78:
+            if not long_permission_active:
+                long_permission_active = True
+                long_permission_activated_at = idx
+                print(f"[PERM] Bar {i}: Long permission ACTIVATED at {idx} (Stoch RSI K = {curr_stoch_k:.2f})")
+        elif curr_stoch_k < 50:
+            if long_permission_active:
+                long_permission_active = False
+                print(f"[PERM] Bar {i}: Long permission DEACTIVATED at {idx} (Stoch RSI K = {curr_stoch_k:.2f} < 50)")
+        
+        # Short Permission Logic:
+        # - Activate when K crosses/reaches 22 or below (tolerance for extra margin)
+        # - Stay active while K < 50
+        # - Deactivate when K crosses above 50
+        if curr_stoch_k <= 22:
+            if not short_permission_active:
+                short_permission_active = True
+                short_permission_activated_at = idx
+                print(f"[PERM] Bar {i}: Short permission ACTIVATED at {idx} (Stoch RSI K = {curr_stoch_k:.2f})")
+        elif curr_stoch_k > 50:
+            if short_permission_active:
+                short_permission_active = False
+                print(f"[PERM] Bar {i}: Short permission DEACTIVATED at {idx} (Stoch RSI K = {curr_stoch_k:.2f} > 50)")
+        
+        # ============ CHECK STOP LOSS & TRAILING STOP ============
         if position != 0:
-            # Calculate unrealized loss based on worst price during candle
+            # Track highest/lowest prices for trailing stop
             if position == 1:  # LONG position
                 worst_price = low_price
-                unrealized_loss = entry_units * (entry_price - worst_price)
+                if highest_price_in_trade is None or high_price > highest_price_in_trade:
+                    highest_price_in_trade = high_price
+                    if use_trailing_stop:
+                        trailing_stop_price = highest_price_in_trade * (1 - trailing_stop_pct / 100.0)
             else:  # SHORT position
                 worst_price = high_price
-                unrealized_loss = entry_units * (worst_price - entry_price)
+                if lowest_price_in_trade is None or low_price < lowest_price_in_trade:
+                    lowest_price_in_trade = low_price
+                    if use_trailing_stop:
+                        trailing_stop_price = lowest_price_in_trade * (1 + trailing_stop_pct / 100.0)
 
-            # Stop loss dollar amount uses the LOWER of initial_capital and current equity
-            sl_basis = min(initial_capital, equity)
-            max_loss_amount = sl_basis * (risk_per_trade / 100.0)
-
-            # Check if unrealized loss hits the stop
-            if risk_per_trade < 100 and unrealized_loss >= max_loss_amount:
-                # Exit at the exact stop loss price
-                if position == 1:  # LONG
-                    exit_price = entry_price - (max_loss_amount / entry_units)
-                else:  # SHORT
-                    exit_price = entry_price + (max_loss_amount / entry_units)
-
+            # Check stop loss condition
+            should_stop_out = False
+            stop_type = None
+            exit_price_calc = None
+            
+            if use_trailing_stop and trailing_stop_price is not None:
+                # Trailing Stop Loss Check
+                if position == 1 and low_price <= trailing_stop_price:
+                    should_stop_out = True
+                    stop_type = "TRAILING_STOP"
+                    exit_price_calc = trailing_stop_price
+                elif position == -1 and high_price >= trailing_stop_price:
+                    should_stop_out = True
+                    stop_type = "TRAILING_STOP"
+                    exit_price_calc = trailing_stop_price
+            else:
+                # Fixed Stop Loss Check (original logic)
+                unrealized_loss = entry_units * (entry_price - worst_price) if position == 1 else entry_units * (worst_price - entry_price)
+                sl_basis = min(initial_capital, equity)
+                max_loss_amount = sl_basis * (risk_per_trade / 100.0)
+                
+                if risk_per_trade < 100 and unrealized_loss >= max_loss_amount:
+                    should_stop_out = True
+                    stop_type = "FIXED_STOP"
+                    if position == 1:
+                        exit_price_calc = entry_price - (max_loss_amount / entry_units)
+                    else:
+                        exit_price_calc = entry_price + (max_loss_amount / entry_units)
+            
+            # Execute stop loss if triggered
+            if should_stop_out:
+                exit_price = exit_price_calc
+                
                 if position == 1:
                     pnl = entry_units * (exit_price - entry_price)
                 else:
                     pnl = entry_units * (entry_price - exit_price)
 
                 equity += pnl
+                sl_basis = min(initial_capital, equity) if not use_trailing_stop else entry_equity
                 pnl_pct = (pnl / sl_basis) * 100.0
                 
                 trades.append({
@@ -1216,15 +1395,21 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                     "lot_size": lot_value if use_lot_size else None,
                     "equity_after": equity,
                     "stop_loss": True,
+                    "stop_type": stop_type,
                     "signal_bar_close": signal_bar_data["close"] if signal_bar_data else None,
                     "signal_bar_ema20": signal_bar_data["ema20"] if signal_bar_data else None,
                     "signal_bar_ema50": signal_bar_data["ema50"] if signal_bar_data else None,
+                    "signal_bar_stoch_k": signal_bar_data["stoch_k"] if signal_bar_data else None,
+                    "signal_bar_chop": signal_bar_data["chop"] if signal_bar_data else None,
                     "exit_signal_close": close,
                     "exit_signal_ema20": curr20,
                     "exit_signal_ema50": curr50,
+                    "exit_signal_stoch_k": curr_stoch_k,
+                    "exit_signal_chop": curr_chop,
                 })
                 
-                print(f"[STOP LOSS] Hit at {idx}: {entry_direction.upper()} closed at ${exit_price:.2f}, loss: ${abs(pnl):.2f} ({risk_per_trade}% of ${sl_basis:.2f} = ${max_loss_amount:.2f})")
+                stop_label = "TRAILING STOP" if stop_type == "TRAILING_STOP" else "FIXED STOP LOSS"
+                print(f"[{stop_label}] Hit at {idx}: {entry_direction.upper()} closed at ${exit_price:.2f}, PnL: ${pnl:.2f} ({pnl_pct:.2f}%)")
                 
                 position = 0
                 entry_price = None
@@ -1232,32 +1417,29 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                 entry_direction = None
                 entry_units = 0.0
                 entry_signal_bar = None
-                exit_signal_bar = None
                 stop_loss_price = None
+                highest_price_in_trade = None
+                lowest_price_in_trade = None
+                trailing_stop_price = None
                 signal_bar_data = None
-                exit_signal_bar_data = None
-                pending_exit_signal = False
-                continue  # Skip normal exit logic
-
-        # Detect EMA20/50 crossovers at CLOSE of current bar
-        if pd.isna(row["prev_ema20"]) or pd.isna(row["prev_ema50"]):
-            continue
+                continue
         
+        # ============ DETECT EMA CROSSOVERS ============
         crossover_signal = None
         
         # LONG signal: EMA20 crosses above EMA50
-        if prev20 <= prev50 and curr20 > curr50:
+        if prev20 < prev50 and curr20 >= curr50:
             crossover_signal = "long"
-            print(f"[CROSSOVER] LONG at bar {i}: EMA20 crossed above EMA50 (prev20={prev20:.2f}, curr20={curr20:.2f}, prev50={prev50:.2f}, curr50={curr50:.2f})")
+            print(f"[CROSSOVER] LONG signal at bar {i}: EMA20 crossed above EMA50")
         
         # SHORT signal: EMA20 crosses below EMA50
-        elif prev20 >= prev50 and curr20 < curr50:
+        elif prev20 > prev50 and curr20 <= curr50:
             crossover_signal = "short"
-            print(f"[CROSSOVER] SHORT at bar {i}: EMA20 crossed below EMA50 (prev20={prev20:.2f}, curr20={curr20:.2f}, prev50={prev50:.2f}, curr50={curr50:.2f})")
+            print(f"[CROSSOVER] SHORT signal at bar {i}: EMA20 crossed below EMA50")
         
-        # If there's a crossover signal
+        # ============ PROCESS CROSSOVER SIGNALS ============
         if crossover_signal is not None:
-            # If we have an open position, close it and flip to opposite direction
+            # If we have an open position, close it first
             if position != 0:
                 # Only flip if the signal is in the OPPOSITE direction
                 if (position == 1 and crossover_signal == "short") or (position == -1 and crossover_signal == "long"):
@@ -1288,71 +1470,158 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
                         "signal_bar_close": signal_bar_data["close"] if signal_bar_data else None,
                         "signal_bar_ema20": signal_bar_data["ema20"] if signal_bar_data else None,
                         "signal_bar_ema50": signal_bar_data["ema50"] if signal_bar_data else None,
+                        "signal_bar_stoch_k": signal_bar_data["stoch_k"] if signal_bar_data else None,
+                        "signal_bar_chop": signal_bar_data["chop"] if signal_bar_data else None,
                         "exit_signal_close": close,
                         "exit_signal_ema20": curr20,
                         "exit_signal_ema50": curr50,
+                        "exit_signal_stoch_k": curr_stoch_k,
+                        "exit_signal_chop": curr_chop,
                     })
                     
                     print(f"[EXIT] {entry_direction.upper()} closed at ${exit_price:.2f}, PnL: ${pnl:.2f}")
                     
-                    # Reset position so we enter below
+                    # Reset position for potential new entry below
                     position = 0
                     entry_price = None
                     entry_time = None
                     entry_direction = None
                     entry_units = 0.0
-                    entry_equity = equity  # Reset to current equity for next trade
                     entry_signal_bar = None
+                    highest_price_in_trade = None
+                    lowest_price_in_trade = None
+                    trailing_stop_price = None
                     signal_bar_data = None
+                    entry_equity = equity
                 else:
-                    # Same direction crossover — already in this direction, skip
+                    # Same direction signal, skip
                     continue
             
-            # Always enter the new position on every crossover (no gaps)
-            position = 1 if crossover_signal == "long" else -1
-            entry_time = idx
-            entry_price = close
-            entry_direction = crossover_signal
-            entry_signal_bar = idx
-            entry_equity = equity  # Snapshot equity at entry for reference
-
-            # Stop loss basis: lower of initial_capital and current equity
-            # (cap risk when up, protect when down)
-            sl_basis_entry = min(initial_capital, equity)
-
-            # Calculate position size based on stop loss basis and risk %
-            if use_lot_size and lot_value is not None and market == "forex":
-                entry_units = lot_value * 100
-            else:
-                # Size position so that max_loss = sl_basis * risk%
-                max_loss_amount = sl_basis_entry * (risk_per_trade / 100.0) if risk_per_trade < 100 else sl_basis_entry
-                trade_capital = sl_basis_entry * (risk_per_trade / 100.0) if risk_per_trade < 100 else equity
-                entry_units = trade_capital / entry_price
-
-            # Calculate stop loss price
-            if risk_per_trade == 100:
-                stop_loss_price = None
-            else:
-                max_loss_amount = sl_basis_entry * (risk_per_trade / 100.0)
-                price_distance = max_loss_amount / entry_units
-                if entry_direction == "long":
-                    stop_loss_price = entry_price - price_distance
+            # ============ CHECK ENTRY CONDITIONS ============
+            # Long Entry: EMA crossover + long_permission_active + CHOP <= 52
+            # PLUS: Current K must still be >= 78 to enter (lowered threshold for extra margin)
+            if crossover_signal == "long":
+                perm_info = f"Activated at {long_permission_activated_at}" if long_permission_activated_at else "Never"
+                print(f"[CHECK LONG] EMA=YES, LongPerm={long_permission_active}({perm_info}), CHOP={curr_chop:.2f}<=52?, K={curr_stoch_k:.2f}>=78?")
+                if long_permission_active and curr_chop <= 52 and curr_stoch_k >= 78:
+                    print(f"[ENTRY LONG] YES - Crossover + Permission Active + CHOP OK + K>=78")
+                    # Entry allowed
+                    position = 1
+                    entry_time = idx
+                    entry_price = close
+                    entry_direction = "long"
+                    entry_signal_bar = idx
+                    entry_equity = equity
+                    
+                    # Calculate position size
+                    sl_basis_entry = min(initial_capital, equity)
+                    
+                    if use_lot_size and lot_value is not None and market == "forex":
+                        entry_units = lot_value * 100
+                    else:
+                        max_loss_amount = sl_basis_entry * (risk_per_trade / 100.0) if risk_per_trade < 100 else sl_basis_entry
+                        trade_capital = sl_basis_entry * (risk_per_trade / 100.0) if risk_per_trade < 100 else equity
+                        entry_units = trade_capital / entry_price
+                    
+                    # Calculate stop loss
+                    if risk_per_trade == 100:
+                        stop_loss_price = None
+                    else:
+                        max_loss_amount = sl_basis_entry * (risk_per_trade / 100.0)
+                        price_distance = max_loss_amount / entry_units
+                        stop_loss_price = entry_price - price_distance
+                    
+                    signal_bar_data = {
+                        "close": close,
+                        "ema20": curr20,
+                        "ema50": curr50,
+                        "stoch_k": curr_stoch_k,
+                        "chop": curr_chop,
+                    }
+                    
+                    # Initialize trailing stop if enabled
+                    if use_trailing_stop:
+                        highest_price_in_trade = entry_price
+                        trailing_stop_price = entry_price * (1 - trailing_stop_pct / 100.0)
+                        stop_loss_str = f"${trailing_stop_price:.2f} (Trailing {trailing_stop_pct}%)"
+                    else:
+                        highest_price_in_trade = None
+                        lowest_price_in_trade = None
+                        stop_loss_str = f"${stop_loss_price:.2f}" if stop_loss_price is not None else "None"
+                    
+                    print(f"[ENTRY] LONG at ${entry_price:.2f}, units={entry_units:.6f}, stop={stop_loss_str}")
                 else:
-                    stop_loss_price = entry_price + price_distance
+                    # Entry conditions not met
+                    reason = []
+                    if not long_permission_active:
+                        reason.append(f"LongPerm=False(K={curr_stoch_k:.2f})")
+                    if curr_chop > 52:
+                        reason.append(f"CHOP={curr_chop:.2f}>52")
+                    print(f"[SKIP LONG] Conditions not met: {', '.join(reason)}")
             
-            # Store signal bar data
-            signal_bar_data = {
-                "close": close if not math.isnan(close) else None,
-                "ema20": curr20 if not math.isnan(curr20) else None,
-                "ema50": curr50 if not math.isnan(curr50) else None,
-            }
-            
-            stop_loss_str = f"${stop_loss_price:.2f}" if stop_loss_price is not None else "None"
-            print(f"[ENTRY] {entry_direction.upper()} at ${entry_price:.2f}, units={entry_units:.6f}, stop={stop_loss_str}, risk={risk_per_trade}%")
+            # Short Entry: EMA crossover + short_permission_active + CHOP <= 52
+            elif crossover_signal == "short":
+                perm_info = f"Activated at {short_permission_activated_at}" if short_permission_activated_at else "Never"
+                print(f"[CHECK SHORT] EMA=YES, ShortPerm={short_permission_active}({perm_info}), CHOP={curr_chop:.2f}<=52?, K={curr_stoch_k:.2f}<=22?")
+                if short_permission_active and curr_chop <= 52 and curr_stoch_k <= 22:
+                    print(f"[ENTRY SHORT] YES - Crossover + Permission Active + CHOP OK + K<=22")
+                    # Entry allowed
+                    position = -1
+                    entry_time = idx
+                    entry_price = close
+                    entry_direction = "short"
+                    entry_signal_bar = idx
+                    entry_equity = equity
+                    
+                    # Calculate position size
+                    sl_basis_entry = min(initial_capital, equity)
+                    
+                    if use_lot_size and lot_value is not None and market == "forex":
+                        entry_units = lot_value * 100
+                    else:
+                        max_loss_amount = sl_basis_entry * (risk_per_trade / 100.0) if risk_per_trade < 100 else sl_basis_entry
+                        trade_capital = sl_basis_entry * (risk_per_trade / 100.0) if risk_per_trade < 100 else equity
+                        entry_units = trade_capital / entry_price
+                    
+                    # Calculate stop loss
+                    if risk_per_trade == 100:
+                        stop_loss_price = None
+                    else:
+                        max_loss_amount = sl_basis_entry * (risk_per_trade / 100.0)
+                        price_distance = max_loss_amount / entry_units
+                        stop_loss_price = entry_price + price_distance
+                    
+                    signal_bar_data = {
+                        "close": close,
+                        "ema20": curr20,
+                        "ema50": curr50,
+                        "stoch_k": curr_stoch_k,
+                        "chop": curr_chop,
+                    }
+                    
+                    # Initialize trailing stop if enabled
+                    if use_trailing_stop:
+                        lowest_price_in_trade = entry_price
+                        trailing_stop_price = entry_price * (1 + trailing_stop_pct / 100.0)
+                        stop_loss_str = f"${trailing_stop_price:.2f} (Trailing {trailing_stop_pct}%)"
+                    else:
+                        highest_price_in_trade = None
+                        lowest_price_in_trade = None
+                        stop_loss_str = f"${stop_loss_price:.2f}" if stop_loss_price is not None else "None"
+                    
+                    print(f"[ENTRY] SHORT at ${entry_price:.2f}, units={entry_units:.6f}, stop={stop_loss_str}")
+                else:
+                    # Entry conditions not met
+                    reason = []
+                    if not short_permission_active:
+                        reason.append(f"ShortPerm=False(K={curr_stoch_k:.2f})")
+                    if curr_chop > 52:
+                        reason.append(f"CHOP={curr_chop:.2f}>52")
+                    print(f"[SKIP SHORT] Conditions not met: {', '.join(reason)}")
 
     # Handle open positions at end of data
     if position != 0 and entry_time is not None:
-        last_close = signal_bar_data["close"] if signal_bar_data else float(df["Close"].iloc[-1])
+        last_close = float(df["Close"].iloc[-1])
         if position == 1:
             pnl = entry_units * (last_close - entry_price)
         else:
@@ -1361,11 +1630,15 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
         equity += pnl
         pnl_pct = (pnl / entry_equity) * 100.0
         
+        last_idx = df.index[-1]
+        last_stoch_k = float(df["stoch_rsi_k"].iloc[-1]) if not pd.isna(df["stoch_rsi_k"].iloc[-1]) else None
+        last_chop = float(df["chop"].iloc[-1]) if not pd.isna(df["chop"].iloc[-1]) else None
+        
         trades.append({
             "entry_signal_bar": entry_signal_bar,
             "entry_time": entry_time,
-            "exit_signal_bar": df.index[-1],
-            "exit_time": df.index[-1],
+            "exit_signal_bar": last_idx,
+            "exit_time": last_idx,
             "direction": entry_direction,
             "entry_price": entry_price,
             "exit_price": last_close,
@@ -1376,13 +1649,16 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
             "risk_pct": risk_per_trade,
             "lot_size": lot_value if use_lot_size else None,
             "equity_after": equity,
-            # Signal bar details for manual verification
             "signal_bar_close": signal_bar_data["close"] if signal_bar_data else None,
             "signal_bar_ema20": signal_bar_data["ema20"] if signal_bar_data else None,
             "signal_bar_ema50": signal_bar_data["ema50"] if signal_bar_data else None,
+            "signal_bar_stoch_k": signal_bar_data["stoch_k"] if signal_bar_data else None,
+            "signal_bar_chop": signal_bar_data["chop"] if signal_bar_data else None,
             "exit_signal_close": None,
             "exit_signal_ema20": None,
             "exit_signal_ema50": None,
+            "exit_signal_stoch_k": last_stoch_k,
+            "exit_signal_chop": last_chop,
         })
 
     trade_df = pd.DataFrame(trades)
@@ -1403,8 +1679,8 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
             "entry_signal_bar", "entry_time", "exit_signal_bar", "exit_time", 
             "direction", "entry_price", "exit_price", "pnl", "pnl_pct", 
             "position_size", "capital_used", "risk_pct", "lot_size", "equity_after", "is_win",
-            "signal_bar_close", "signal_bar_ema20", "signal_bar_ema50",
-            "exit_signal_close", "exit_signal_ema20", "exit_signal_ema50"
+            "signal_bar_close", "signal_bar_ema20", "signal_bar_ema50", "signal_bar_stoch_k", "signal_bar_chop",
+            "exit_signal_close", "exit_signal_ema20", "exit_signal_ema50", "exit_signal_stoch_k", "exit_signal_chop"
         ]].copy()
         
         trade_log["entry_signal_bar"] = trade_log["entry_signal_bar"].dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -1413,7 +1689,6 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
         trade_log["exit_time"] = trade_log["exit_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
         
         # Limit trade log to prevent response size issues
-        # For large backtests, only return the most recent 1000 trades
         max_trades_to_return = 1000
         total_trades = len(trade_log)
         if total_trades > max_trades_to_return:
@@ -1452,10 +1727,11 @@ def run_strategy(df, initial_capital: float, market: str = "india", lot_size: fl
     }
     
     print(f"\n{'='*60}")
-    print(f"STRATEGY BACKTEST COMPLETE")
+    print(f"XAUUSD STRATEGY BACKTEST COMPLETE")
     print(f"Total Trades: {summary['trades']}")
     print(f"Wins: {summary['wins']} | Losses: {summary['losses']} | Accuracy: {summary['accuracy']}%")
     print(f"Total PnL: ${summary['total_pnl']} | Avg PnL: ${summary['avg_pnl']}")
+    print(f"Max Drawdown: {summary['max_drawdown']}%")
     print(f"Ending Equity: ${summary['ending_equity']}")
     print(f"{'='*60}\n")
     
@@ -1677,12 +1953,20 @@ async def run_backtest(
         
         # Add performance warning for very large datasets
         if len(df) > 100000:
-            print(f"⚠️ Large dataset detected ({len(df):,} rows). Computing EMAs...")
+            print(f"⚠️ Large dataset detected ({len(df):,} rows). Computing indicators...")
         
+        # Compute all indicators
         df = compute_emas(df)
+        print(f"✓ Computed EMAs")
+        
+        df = compute_stoch_rsi(df, k=3, d=3, rsi_length=14, stoch_length=14)
+        print(f"✓ Computed Stochastic RSI (K=3, D=3, RSI=14, Length=14 - MT5 DEFAULT)")
+        
+        df = compute_choppiness_index(df, length=14)
+        print(f"✓ Computed Choppiness Index (length=14)")
 
-        # Trim data to the user's requested start date AFTER computing EMAs.
-        # EMAs need prior bars to warm up, but the user should only see data
+        # Trim data to the user's requested start date AFTER computing indicators.
+        # Indicators need prior bars to warm up, but the user should only see data
         # from the date they actually selected — no earlier candles in trades/display.
         if data_source_val != "upload" and start_date:
             user_start = pd.Timestamp(start_date).normalize()
@@ -1695,7 +1979,7 @@ async def run_backtest(
         if df.empty:
             raise ValueError("No data available for the selected date range after processing.")
 
-        print(f"✓ Computed EMAs, starting backtest with {len(df):,} rows...")
+        print(f"✓ All indicators computed, starting backtest with {len(df):,} rows...")
         
         result = run_strategy(df, initial_capital, market=market, lot_size=lot_size_val, risk_per_trade=risk_per_trade_val)
         print(f"✓ Backtest complete: {result['summary']['trades']} trades generated")

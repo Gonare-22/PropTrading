@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>EMA Strategy Backtest UI</title>
+    <title>XAUUSD 1-Min Strategy - EMA20/50 RSI Choppiness Backtest</title>
     <style>
       body {
         font-family: Arial, sans-serif;
@@ -13,14 +13,60 @@
         padding: 24px;
       }
       .card {
-        max-width: 980px;
+        max-width: 1000px;
         margin: 0 auto;
         background: rgba(255,255,255,0.08);
         padding: 24px;
         border-radius: 18px;
         box-shadow: 0 14px 60px rgba(0,0,0,0.35);
       }
-      h1 { margin-top: 0; }
+      h1 { 
+        margin-top: 0;
+        background: linear-gradient(135deg, #ffd700, #ffed4e);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+      .strategy-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #ff6b35, #ff8c42);
+        padding: 8px 16px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: 700;
+        margin-top: 8px;
+        color: white;
+      }
+      .indicators-display {
+        display: flex;
+        gap: 12px;
+        margin-top: 12px;
+        flex-wrap: wrap;
+      }
+      .indicator-tag {
+        background: rgba(74, 144, 226, 0.3);
+        border: 1px solid rgba(74, 144, 226, 0.6);
+        padding: 6px 12px;
+        border-radius: 8px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #87ceeb;
+      }
+      .indicator-tag.primary {
+        background: rgba(46, 204, 113, 0.3);
+        border-color: rgba(46, 204, 113, 0.6);
+        color: #5dff6e;
+      }
+      .indicator-tag.secondary {
+        background: rgba(155, 89, 182, 0.3);
+        border-color: rgba(155, 89, 182, 0.6);
+        color: #d8b1ff;
+      }
+      .indicator-tag.filter {
+        background: rgba(230, 126, 34, 0.3);
+        border-color: rgba(230, 126, 34, 0.6);
+        color: #ffa500;
+      }
       .table-container {
         overflow-x: auto;
         margin-top: 16px;
@@ -85,8 +131,20 @@
   </head>
   <body>
     <div class="card">
-      <h1>EMA 20/50 Strategy Backtest</h1>
-      <p class="muted">Dynamic backend-driven backtest for Indian, US, and Forex markets.</p>
+      <h1>🥇 XAUUSD 1-Minute Trading Strategy</h1>
+      <div class="strategy-badge">Advanced Indicator Combo Strategy</div>
+      
+      <div class="indicators-display">
+        <div class="indicator-tag primary">📊 EMA 20/50 Crossover</div>
+        <div class="indicator-tag secondary">📈 Stochastic RSI (K≥79/K≤21)</div>
+        <div class="indicator-tag filter">🔗 Choppiness Index (CHOP≤50)</div>
+      </div>
+      
+      <p class="muted" style="margin-top: 14px;">
+        <strong>Entry Rules:</strong> 20 EMA crosses 50 EMA + Stoch RSI Permission + CHOP ≤ 50<br>
+        <strong>Exit Rules:</strong> Opposite EMA crossover or Stop Loss<br>
+        <strong>Designed for:</strong> XAUUSD 1-minute timeframe with risk management
+      </p>
       <form id="backtestForm">
         <div class="grid">
           <div>
@@ -277,18 +335,16 @@
 
         // --- Sheet 2: Trade Log ---
         const headers = [
-          '#','Signal Time','Entry Time','Exit Signal Time','Exit Time',
+          '#','Entry Time','Exit Time',
           'Direction','Entry Price','Exit Price',
           'PnL','PnL %','Position Size','Capital Used',
-          'Risk %','Equity After','Result',
+          'Risk %','Stoch RSI K','CHOP','Equity After','Result',
           'Entry EMA20','Entry EMA50','Exit EMA20','Exit EMA50'
         ];
         const rows = lastTradeData.map(function(t, i) {
           return [
             i + 1,
-            t.entry_signal_bar || '',
             t.entry_time || '',
-            t.exit_signal_bar || '',
             t.exit_time || '',
             (t.direction || '').toUpperCase(),
             t.entry_price != null ? t.entry_price : '',
@@ -298,6 +354,8 @@
             t.position_size != null ? t.position_size : '',
             t.capital_used  != null ? t.capital_used  : '',
             t.risk_pct      != null ? t.risk_pct      : '',
+            t.signal_bar_stoch_k != null ? t.signal_bar_stoch_k : '',
+            t.signal_bar_chop != null ? t.signal_bar_chop : '',
             t.equity_after  != null ? t.equity_after  : '',
             t.is_win ? 'Win' : 'Loss',
             t.signal_bar_ema20 != null ? t.signal_bar_ema20 : '',
@@ -308,10 +366,10 @@
         });
         const wsTradeLog = XLSX.utils.aoa_to_sheet([headers].concat(rows));
         wsTradeLog['!cols'] = [
-          {wch:4},{wch:22},{wch:22},{wch:22},{wch:22},
+          {wch:4},{wch:22},{wch:22},
           {wch:10},{wch:13},{wch:13},
           {wch:12},{wch:10},{wch:14},{wch:14},
-          {wch:8},{wch:14},{wch:8},
+          {wch:8},{wch:12},{wch:10},{wch:14},{wch:8},
           {wch:12},{wch:12},{wch:12},{wch:12}
         ];
         XLSX.utils.book_append_sheet(wb, wsTradeLog, 'Trade Log');
@@ -403,19 +461,21 @@
         const tradeRows = trades.map(function(trade, index) {
           const pnlClass = (trade.pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
           const rowClass = trade.is_win ? 'win-row' : 'loss-row';
+          const stochK = trade.signal_bar_stoch_k != null ? parseFloat(trade.signal_bar_stoch_k).toFixed(1) : 'N/A';
+          const chop = trade.signal_bar_chop != null ? parseFloat(trade.signal_bar_chop).toFixed(1) : 'N/A';
           return '<tr class="' + rowClass + '">' +
             '<td>' + (index + 1) + '</td>' +
-            '<td>' + (trade.entry_signal_bar || '') + '</td>' +
             '<td>' + (trade.entry_time || '') + '</td>' +
-            '<td>' + (trade.exit_signal_bar || '') + '</td>' +
             '<td>' + (trade.exit_time || '') + '</td>' +
-            '<td style="text-transform:uppercase;font-weight:700;">' + (trade.direction || '') + '</td>' +
+            '<td style="text-transform:uppercase;font-weight:700;text-align:center;">' + (trade.direction ? trade.direction.charAt(0) : '') + '</td>' +
             '<td><strong>' + currency + (trade.entry_price != null ? trade.entry_price.toFixed(2) : '') + '</strong></td>' +
             '<td><strong>' + currency + (trade.exit_price != null ? trade.exit_price.toFixed(2) : '') + '</strong></td>' +
             '<td class="' + pnlClass + '"><strong>' + currency + (trade.pnl != null ? trade.pnl.toFixed(2) : '') + '</strong></td>' +
             '<td class="' + pnlClass + '">' + (trade.pnl_pct != null ? trade.pnl_pct.toFixed(2) + '%' : '') + '</td>' +
+            '<td style="color: #d8b1ff; font-weight: 600;">' + stochK + '</td>' +
+            '<td style="color: #ffa500; font-weight: 600;">' + chop + '</td>' +
             '<td>' + currency + (trade.equity_after != null ? trade.equity_after.toFixed(2) : '') + '</td>' +
-            '<td style="font-weight:700;">' + (trade.is_win ? 'Win' : 'Loss') + '</td>' +
+            '<td style="font-weight:700;">' + (trade.is_win ? '✓ Win' : '✗ Loss') + '</td>' +
             '</tr>';
         }).join('');
 
@@ -427,27 +487,36 @@
           '<h3>' + (data.symbol_label || data.symbol || '') + '</h3>' +
           '<p class="muted">Market: ' + (data.market_label || '') + ' | Currency: ' + (data.currency_code || '') + ' | Source: ' + (data.source || '') + '</p>' +
           (data.date_range ? '<p class="muted">Date Range: ' + data.date_range + '</p>' : '') +
-          (summary.trades_limited ? '<p class="muted" style="color:#ffd700;">Showing last ' + summary.trades_displayed + ' of ' + summary.trades + ' trades</p>' : '') +
+          '<div style="margin-top: 12px; padding: 12px; background: rgba(74, 144, 226, 0.2); border-left: 4px solid rgba(74, 144, 226, 0.8); border-radius: 6px;">' +
+            '<strong style="color: #87ceeb;">📊 Strategy Indicators:</strong><br>' +
+            '<span style="font-size: 12px; color: #bcd2e8; margin-top: 6px; display: block;">' +
+              '✓ <strong>EMA 20/50 Crossover</strong> - Entry/Exit trigger<br>' +
+              '✓ <strong>Stochastic RSI (K≥79/K≤21)</strong> - Permission gate (active while K>50 for long, K<50 for short)<br>' +
+              '✓ <strong>Choppiness Index (≤50)</strong> - Trend filter, no entry when CHOP > 50' +
+            '</span>' +
+          '</div>' +
+          (summary.trades_limited ? '<p class="muted" style="color:#ffd700;margin-top:12px;">Showing last ' + summary.trades_displayed + ' of ' + summary.trades + ' trades</p>' : '') +
           '<div class="metrics">' +
             '<div class="metric"><strong>Trades</strong><br>' + (summary.trades || 0) + '</div>' +
             '<div class="metric"><strong>Wins</strong><br>' + (summary.wins || 0) + '</div>' +
             '<div class="metric"><strong>Losses</strong><br>' + (summary.losses || 0) + '</div>' +
             '<div class="metric"><strong>Accuracy</strong><br>' + (summary.accuracy || 0) + '%</div>' +
             '<div class="metric"><strong>Total PnL</strong><br><span class="' + (totalPnl >= 0 ? 'pnl-positive' : 'pnl-negative') + '">' + currency + totalPnl.toLocaleString() + '</span></div>' +
+            '<div class="metric"><strong>Avg PnL</strong><br>' + currency + avgPnl.toLocaleString() + '</div>' +
             '<div class="metric"><strong>Max Drawdown</strong><br>' + (summary.max_drawdown || 0) + '%</div>' +
             '<div class="metric"><strong>Ending Equity</strong><br>' + currency + endingEquity.toLocaleString() + '</div>' +
           '</div>' +
           (trades.length > 0 ?
             '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">' +
-              '<div class="section-title" style="margin-top:24px;">Trade Log</div>' +
+              '<div class="section-title" style="margin-top:24px;">📋 Trade Log (with Indicator Values)</div>' +
               '<button class="btn-export" onclick="exportToExcel()">⬇ Export to Excel</button>' +
             '</div>' +
             '<div class="table-container">' +
               '<table class="trade-table">' +
                 '<thead><tr>' +
-                  '<th>#</th><th>Signal Time</th><th>Entry Time</th><th>Exit Signal Time</th>' +
-                  '<th>Exit Time</th><th>Direction</th><th>Entry Price</th><th>Exit Price</th>' +
-                  '<th>PnL</th><th>PnL %</th><th>Equity After</th><th>Result</th>' +
+                  '<th>#</th><th>Entry Time</th><th>Exit Time</th><th>Dir</th>' +
+                  '<th>Entry $</th><th>Exit $</th><th>PnL</th><th>PnL %</th>' +
+                  '<th>Stoch K</th><th>CHOP</th><th>Equity</th><th>Result</th>' +
                 '</tr></thead>' +
                 '<tbody>' + tradeRows + '</tbody>' +
               '</table>' +
