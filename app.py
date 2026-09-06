@@ -100,7 +100,10 @@ def normalize_date_range(start: str, end: str):
     if start_dt > end_dt:
         raise ValueError("Start date must be on or before the end date")
 
-    return start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
+    # Set end_dt to end of day (23:59:59) to include all trades on the selected end date
+    end_dt = end_dt + pd.Timedelta(hours=23, minutes=59, seconds=59)
+
+    return start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def fetch_yahoo_chunked(symbol: str, start: str, end: str, interval: str):
@@ -1110,14 +1113,40 @@ def compute_stoch_rsi(df, k=6, d=6, rsi_length=28, stoch_length=28):
     - RSI Length: 28
     - Stochastic Length: 28
     - Source: Close
+    
+    RSI Calculation: Uses Wilder's Smoothing (1/n EMA) - Industry Standard (MT5, TradingView)
     """
     df = df.copy()
     
-    # Step 1: Calculate RSI(28)
+    # Step 1: Calculate RSI(28) using Wilder's Smoothing (1/n EMA)
+    # Wilder's Smoothing is an EMA with alpha = 1/n (slower response than standard EMA)
     delta = df["Close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=rsi_length).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_length).mean()
     
+    # Separate gains and losses
+    gains = delta.where(delta > 0, 0)
+    losses = (-delta).where(delta < 0, 0)
+    
+    # Initialize first average (simple average for first rsi_length periods)
+    first_gain_avg = gains.rolling(window=rsi_length).mean()
+    first_loss_avg = losses.rolling(window=rsi_length).mean()
+    
+    # Wilder's smoothing factor: alpha = 1/rsi_length
+    alpha = 1.0 / rsi_length
+    
+    # Apply Wilder's smoothing (EMA with alpha = 1/n)
+    gain = pd.Series(index=df.index, dtype=float)
+    loss = pd.Series(index=df.index, dtype=float)
+    
+    for i in range(len(df)):
+        if i < rsi_length:
+            gain.iloc[i] = first_gain_avg.iloc[i]
+            loss.iloc[i] = first_loss_avg.iloc[i]
+        else:
+            # Wilder's smoothing: new_avg = (prev_avg * (n-1) + current_value) / n
+            gain.iloc[i] = (gain.iloc[i-1] * (rsi_length - 1) + gains.iloc[i]) / rsi_length
+            loss.iloc[i] = (loss.iloc[i-1] * (rsi_length - 1) + losses.iloc[i]) / rsi_length
+    
+    # Calculate RS and RSI
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
     
