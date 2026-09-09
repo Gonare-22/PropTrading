@@ -1,0 +1,72 @@
+XAUUSD 1-Minute Trading Strategy
+
+Create a TradingView/Pine Script strategy for XAUUSD on the 1-minute timeframe using the following rules.
+
+1. EMA Entry & Exit
+
+- Fast EMA: 20
+- Slow EMA: 50
+- Long Entry: When the 20 EMA crosses above the 50 EMA.
+- Short Entry: When the 20 EMA crosses below the 50 EMA.
+- Long Exit: When the 20 EMA crosses below the 50 EMA.
+- Short Exit: When the 20 EMA crosses above the 50 EMA.
+
+2. Stochastic RSI Filter
+
+Use these exact Stoch RSI settings:
+
+- K: 6
+- D: 6
+- RSI Length: 28
+- Stochastic Length: 28
+- Source: Close
+
+Long condition:
+A long position is allowed only when Stoch RSI K is ≥ 80.
+A tolerance of ±1 is allowed, meaning a long entry can be taken when Stoch RSI K is ≥ 79.
+
+Short condition:
+A short position is allowed only when Stoch RSI K is ≤ 20.
+A tolerance of ±1 is allowed, meaning a short entry can be taken when Stoch RSI K is ≤ 21.
+
+3. Choppiness Index Filter
+
+- Choppiness Index Length: 14
+- CHOP ≤ 50: Trading is allowed.
+- CHOP > 50: Do not take a new trade.
+- A position may be opened when CHOP is exactly 50.
+
+4. Complete Entry Logic
+
+LONG:
+1. 20 EMA crosses above 50 EMA.
+2. Stoch RSI K ≥ 79.
+3. CHOP ≤ 50.
+
+SHORT:
+1. 20 EMA crosses below 50 EMA.
+2. Stoch RSI K ≤ 21.
+3. CHOP ≤ 50.
+
+5. Exit Logic
+
+Do not use CHOP or Stoch RSI to exit an existing position.
+
+- Long: Exit only when 20 EMA crosses below 50 EMA.
+- Short: Exit only when 20 EMA crosses above 50 EMA.
+
+6. Important Execution Rules
+
+- New long and short positions may be entered when CHOP ≤ 50, including exactly 50.
+- Do not enter when CHOP > 50.
+- Do not enter long unless Stoch RSI K ≥ 79.
+- Do not enter short unless Stoch RSI K ≤ 21.
+- Avoid duplicate entries while already in the same position.
+- Use confirmed candle-close signals to avoid repainting/future-data issues.
+- Keep all indicator parameters as inputs for backtesting.
+- Intended specifically for XAUUSD on the 1-minute timeframe.
+
+Summary:
+LONG = 20/50 bullish cross + Stoch RSI K ≥ 79 + CHOP ≤ 50
+SHORT = 20/50 bearish cross + Stoch RSI K ≤ 21 + CHOP ≤ 50
+EXIT = Opposite 20/50 EMA cross

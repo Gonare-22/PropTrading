@@ -1,0 +1,13 @@
+Stoch RSI Entry Permission Logic
+
+Update only the Stoch RSI entry-permission logic. Do not change the existing stop-loss, profit-protection, entry, or exit rules.
+
+- Long permission: When Stoch RSI K crosses/reaches 80 or above, activate long-entry permission.
+- Keep long-entry permission active while Stoch RSI K remains above 50.
+- When Stoch RSI K crosses below 50, deactivate long-entry permission.
+- Short permission: When Stoch RSI K crosses/reaches 20 or below, activate short-entry permission.
+- Keep short-entry permission active while Stoch RSI K remains below 50.
+- When Stoch RSI K crosses above 50, deactivate short-entry permission.
+- The 20/50 EMA crossover remains the actual entry trigger.
+- Stoch RSI permission only determines whether a new long or short entry is allowed.
+- Do not use Stoch RSI crossing 50 as an exit signal for an existing position.
