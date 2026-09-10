@@ -41,6 +41,7 @@ export default function App() {
   const [bt, setBt] = useState(null);
   const [mtf, setMtf] = useState(null);
   const [mtfBusy, setMtfBusy] = useState(false);
+  const [tradePage, setTradePage] = useState(1);
 
   const setP = (k) => (v) => setParams((p) => ({ ...p, [k]: v }));
 
@@ -68,7 +69,12 @@ export default function App() {
   );
   const chopArr = useMemo(() => (bars ? chop(bars, params.chopLength) : null), [bars, params.chopLength]);
 
-  const runBt = useCallback(() => bars && setBt(runStrategy(bars, params)), [bars, params]);
+  const runBt = useCallback(() => {
+    if (bars) {
+      setBt(runStrategy(bars, params));
+      setTradePage(1); // reset to first page on new backtest
+    }
+  }, [bars, params]);
 
   const compareTf = useCallback(async () => {
     setMtfBusy(true);
@@ -242,7 +248,7 @@ export default function App() {
 
           <Group title="Risk management (0 = off, spec exit stays on opposite cross)">
             <NumField label="Stop loss" value={params.stopLoss} onChange={setP("stopLoss")} min={0} max={100000} step={0.1} />
-            <Select label="Stop unit" value={params.stopMode} onChange={setP("stopMode")} options={[["points", "points"], ["percent", "%"], ["atr", "× ATR"]]} />
+            <Select label="Stop unit" value={params.stopMode} onChange={setP("stopMode")} options={[["points", "points"], ["percent", "%"], ["atr", "× ATR"], ["fixed", "$ fixed"]]} />
             <NumField label="Take profit" value={params.takeProfit} onChange={setP("takeProfit")} min={0} max={100000} step={0.1} />
             <Select label="TP unit" value={params.tpMode} onChange={setP("tpMode")} options={[["points", "points"], ["percent", "%"], ["atr", "× ATR"], ["r", "× stop (R)"]]} />
             <NumField label="Trailing stop" value={params.trailStop} onChange={setP("trailStop")} min={0} max={100000} step={0.1} />
@@ -353,30 +359,111 @@ export default function App() {
                   fmtY={(v, d) => "$" + Math.round(v).toLocaleString("en-US", { maximumFractionDigits: d ?? 0 })} />
               </div>
 
-              {bt.trades.length > 0 && (
-                <div className="mt-4 overflow-x-auto">
-                  <div className="text-xs text-zinc-500 mb-1">Last {Math.min(14, bt.trades.length)} of {bt.trades.length} trades</div>
-                  <table className="w-full text-xs tabular-nums">
-                    <thead className="text-zinc-500 text-left">
-                      <tr><th className="py-1 pr-3">Side</th><th className="pr-3">Entry</th><th className="pr-3">Exit</th><th className="pr-3">Lots</th><th className="pr-3">Bars</th><th className="pr-3">Exit by</th><th className="pr-3">P&L</th><th className="pr-3">Return</th></tr>
-                    </thead>
-                    <tbody className="text-zinc-300">
-                      {bt.trades.slice(-14).reverse().map((t, i) => (
-                        <tr key={i} className="border-t border-zinc-800/60">
-                          <td className={"py-1 pr-3 font-medium " + (t.side === "long" ? "text-emerald-400" : "text-rose-400")}>{t.side}{t.open ? " (open)" : ""}</td>
-                          <td className="pr-3">{fmt(t.entryPx)}</td>
-                          <td className="pr-3">{fmt(t.exitPx)}</td>
-                          <td className="pr-3">{t.lots.toFixed(2)}</td>
-                          <td className="pr-3">{t.bars}</td>
-                          <td className="pr-3 text-zinc-500">{t.reason}</td>
-                          <td className={"pr-3 " + (t.pnl >= 0 ? "text-emerald-400" : "text-rose-400")}>{usd(t.pnl)}</td>
-                          <td className={"pr-3 " + (t.ret >= 0 ? "text-emerald-400" : "text-rose-400")}>{pct(t.ret)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+              {bt.trades.length > 0 && (() => {
+                const tradesPerPage = 15;
+                const totalPages = Math.ceil(bt.trades.length / tradesPerPage);
+                const startIdx = (tradePage - 1) * tradesPerPage;
+                const endIdx = Math.min(startIdx + tradesPerPage, bt.trades.length);
+                const pageTrades = bt.trades.slice(startIdx, endIdx);
+                
+                const downloadExcel = () => {
+                  // Create CSV content (Excel-compatible)
+                  const headers = ["Side", "Entry Time", "Entry Price", "Exit Time", "Exit Price", "Lots", "Bars", "Exit By", "P&L", "Return"];
+                  const rows = bt.trades.map(t => [
+                    t.side + (t.open ? " (open)" : ""),
+                    t.entryTime,
+                    t.entryPx,
+                    t.exitTime,
+                    t.exitPx,
+                    t.lots.toFixed(2),
+                    t.bars,
+                    t.reason,
+                    t.pnl.toFixed(2),
+                    (t.ret * 100).toFixed(2) + "%"
+                  ]);
+                  
+                  const csvContent = [
+                    headers.join(","),
+                    ...rows.map(row => row.map(cell => {
+                      const cellStr = String(cell);
+                      return cellStr.includes(",") ? `"${cellStr}"` : cellStr;
+                    }).join(","))
+                  ].join("\n");
+                  
+                  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+                  const link = document.createElement("a");
+                  const url = URL.createObjectURL(blob);
+                  link.setAttribute("href", url);
+                  link.setAttribute("download", `trades_${new Date().toISOString().slice(0, 10)}.csv`);
+                  link.style.visibility = "hidden";
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                };
+                
+                return (
+                  <div className="mt-4 overflow-x-auto">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-xs text-zinc-500">
+                        Showing {startIdx + 1}-{endIdx} of {bt.trades.length} trades
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={downloadExcel}
+                          className="px-3 py-1.5 rounded bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-500 flex items-center gap-1.5"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                          Download Excel
+                        </button>
+                        {totalPages > 1 && (
+                          <>
+                            <button
+                              onClick={() => setTradePage(Math.max(1, tradePage - 1))}
+                              disabled={tradePage === 1}
+                              className="px-2 py-1 rounded border border-zinc-700 text-zinc-300 text-xs hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed"
+                            >
+                              Previous
+                            </button>
+                            <span className="text-xs text-zinc-400 tabular-nums">
+                              Page {tradePage} of {totalPages}
+                            </span>
+                            <button
+                              onClick={() => setTradePage(Math.min(totalPages, tradePage + 1))}
+                              disabled={tradePage === totalPages}
+                              className="px-2 py-1 rounded border border-zinc-700 text-zinc-300 text-xs hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed"
+                            >
+                              Next
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <table className="w-full text-xs tabular-nums">
+                      <thead className="text-zinc-500 text-left">
+                        <tr><th className="py-1 pr-3">Side</th><th className="pr-3">Entry Time</th><th className="pr-3">Entry</th><th className="pr-3">Exit Time</th><th className="pr-3">Exit</th><th className="pr-3">Lots</th><th className="pr-3">Bars</th><th className="pr-3">Exit by</th><th className="pr-3">P&L</th><th className="pr-3">Return</th></tr>
+                      </thead>
+                      <tbody className="text-zinc-300">
+                        {pageTrades.map((t, i) => (
+                          <tr key={i} className="border-t border-zinc-800/60">
+                            <td className={"py-1 pr-3 font-medium " + (t.side === "long" ? "text-emerald-400" : "text-rose-400")}>{t.side}{t.open ? " (open)" : ""}</td>
+                            <td className="pr-3 text-zinc-400">{stamp(t.entryTime, tf)}</td>
+                            <td className="pr-3">{fmt(t.entryPx)}</td>
+                            <td className="pr-3 text-zinc-400">{stamp(t.exitTime, tf)}</td>
+                            <td className="pr-3">{fmt(t.exitPx)}</td>
+                            <td className="pr-3">{t.lots.toFixed(2)}</td>
+                            <td className="pr-3">{t.bars}</td>
+                            <td className="pr-3 text-zinc-500">{t.reason}</td>
+                            <td className={"pr-3 " + (t.pnl >= 0 ? "text-emerald-400" : "text-rose-400")}>{usd(t.pnl)}</td>
+                            <td className={"pr-3 " + (t.ret >= 0 ? "text-emerald-400" : "text-rose-400")}>{pct(t.ret)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
             </>
           ) : (
             <div className="mt-4 text-sm text-zinc-500">Adjust parameters and run to see stats, an equity curve, and entry/exit marks on the chart above.</div>

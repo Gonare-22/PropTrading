@@ -50,7 +50,7 @@ export const DEFAULT_PARAMS = {
 
   // risk management (0 = off)
   stopLoss: 0,
-  stopMode: "points",    // "points" | "percent" | "atr"
+  stopMode: "points",    // "points" | "percent" | "atr" | "fixed"
   takeProfit: 0,
   tpMode: "points",      // "points" | "percent" | "atr" | "r"  (r = multiple of stop distance)
   trailStop: 0,
@@ -127,6 +127,7 @@ export function runStrategy(bars, overrides = {}) {
 
   const stopDistance = (refPx, i) => {
     if (!p.stopLoss) return 0;
+    if (p.stopMode === "fixed") return 0; // fixed dollar stop handled separately
     if (p.stopMode === "percent") return (refPx * p.stopLoss) / 100;
     if (p.stopMode === "atr") return (av && av[i] != null ? av[i] : 0) * p.stopLoss;
     return p.stopLoss; // points
@@ -209,6 +210,15 @@ export function runStrategy(bars, overrides = {}) {
 
     // 1) intrabar stop / target / trail on an existing position (uses this bar's H/L)
     if (pos !== 0) {
+      // Check for fixed dollar stop loss
+      if (p.stopMode === "fixed" && p.stopLoss > 0) {
+        const currentPnl = pos * units * (c - entryFill);
+        if (currentPnl <= -p.stopLoss) {
+          closePosition(i, c, "stop");
+          continue;
+        }
+      }
+      
       // update trailing stop from the favourable extreme
       const td = trailDistance(i);
       if (td > 0) {
