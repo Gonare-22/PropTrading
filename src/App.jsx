@@ -19,23 +19,64 @@ const TFS = [
 ];
 
 const DATASETS = [
-  { key: "2025", label: "2025 Data", path: "/data" },
-  { key: "aug2026", label: "Aug 2026", path: "/data/aug2026" },
+  { key: "2022", label: "2022", path: "/data/2022", hasMonths: true },
+  { key: "2023", label: "2023", path: "/data/2023", hasMonths: true },
+  { key: "2024", label: "2024", path: "/data/2024", hasMonths: true },
+  { key: "2025", label: "2025", path: "/data/2025", hasMonths: true },
+  { key: "aug2026", label: "Aug 2026", path: "/data/aug2026", hasMonths: false },
+];
+
+const MONTHS = [
+  { key: "jan", label: "Jan" },
+  { key: "feb", label: "Feb" },
+  { key: "mar", label: "Mar" },
+  { key: "apr", label: "Apr" },
+  { key: "may", label: "May" },
+  { key: "jun", label: "Jun" },
+  { key: "jul", label: "Jul" },
+  { key: "aug", label: "Aug" },
+  { key: "sep", label: "Sep" },
+  { key: "oct", label: "Oct" },
+  { key: "nov", label: "Nov" },
+  { key: "dec", label: "Dec" },
 ];
 
 const cache = {};
 
-function loadTf(key, dataset = "2025") {
-  const cacheKey = `${dataset}-${key}`;
+function loadTf(key, dataset = "2025", month = null) {
+  const cacheKey = month ? `${dataset}-${month}-${key}` : `${dataset}-${key}`;
   if (cache[cacheKey]) return Promise.resolve(cache[cacheKey]);
   const dataPath = DATASETS.find((d) => d.key === dataset)?.path || "/data";
-  return fetch(`${dataPath}/${key}.json`).then((r) => r.json()).then((j) => (cache[cacheKey] = j[key]));
+  const fullPath = month ? `${dataPath}/${month}/${key}.json` : `${dataPath}/${key}.json`;
+  
+  console.log(`Loading data: ${fullPath} (cache key: ${cacheKey})`);
+  
+  return fetch(fullPath)
+    .then((r) => {
+      if (!r.ok) throw new Error(`Failed to fetch ${fullPath}: ${r.status} ${r.statusText}`);
+      return r.json();
+    })
+    .then((j) => {
+      const data = j[key];
+      if (!data || !Array.isArray(data)) {
+        throw new Error(`Invalid data structure in ${fullPath} - expected array at key "${key}"`);
+      }
+      console.log(`Loaded ${data.length} bars from ${fullPath}`);
+      cache[cacheKey] = data;
+      return data;
+    })
+    .catch((err) => {
+      console.error(`Error loading ${fullPath}:`, err);
+      throw err;
+    });
 }
 
 export default function App() {
   const [tf, setTf] = useState("m15");
   const [dataset, setDataset] = useState("2025");
+  const [month, setMonth] = useState(null);
   const [bars, setBars] = useState(null);
+  const [loadError, setLoadError] = useState(null);
   const [show, setShow] = useState({ emaFast: true, emaSlow: true, stoch: true, chop: true, sma: false, bb: false });
   const [params, setParams] = useState(DEFAULT_PARAMS);
   const [bt, setBt] = useState(null);
@@ -48,15 +89,22 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     setBars(null);
-    loadTf(tf, dataset).then((b) => {
-      if (!alive) return;
-      setBars(b);
-      // keep the panel populated across timeframe switches
-      setBt(runStrategy(b, params));
-    });
+    setLoadError(null);
+    loadTf(tf, dataset, month)
+      .then((b) => {
+        if (!alive) return;
+        setBars(b);
+        // keep the panel populated across timeframe switches
+        setBt(runStrategy(b, params));
+      })
+      .catch((err) => {
+        if (!alive) return;
+        console.error('Failed to load data:', err);
+        setLoadError(err.message);
+      });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tf, dataset]);
+  }, [tf, dataset, month]);
 
   const close = useMemo(() => (bars ? bars.map((b) => b[4]) : []), [bars]);
   const emaFastArr = useMemo(() => ema(close, params.emaFast), [close, params.emaFast]);
@@ -80,12 +128,60 @@ export default function App() {
     setMtfBusy(true);
     const out = [];
     for (const t of TFS) {
-      const b = await loadTf(t.key, dataset);
+      const b = await loadTf(t.key, dataset, month);
       out.push({ ...t, bars: b.length, r: runStrategy(b, params) });
     }
     setMtf(out);
     setMtfBusy(false);
-  }, [params, dataset]);
+  }, [params, dataset, month]);
+
+  if (loadError) {
+    return (
+      <div className="min-h-full bg-zinc-950 text-zinc-100 flex items-center justify-center p-4" style={{ fontFamily: "Inter,system-ui,sans-serif" }}>
+        <div className="max-w-2xl">
+          <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-6">
+            <div className="flex items-start gap-3">
+              <svg className="w-6 h-6 text-rose-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-rose-300 mb-2">Failed to Load Data</h3>
+                <p className="text-sm text-rose-200/90 mb-3">{loadError}</p>
+                <div className="text-xs text-rose-200/70 space-y-1">
+                  <p><strong>Dataset:</strong> {dataset}{month ? ` / ${month}` : ''}</p>
+                  <p><strong>Timeframe:</strong> {tf}</p>
+                  <p><strong>Expected path:</strong> {DATASETS.find((d) => d.key === dataset)?.path || "/data"}{month ? `/${month}` : ''}/{tf}.json</p>
+                </div>
+                <div className="mt-4 flex gap-2">
+                  <button 
+                    onClick={() => { setMonth(null); setLoadError(null); }} 
+                    className="px-4 py-2 rounded bg-rose-500 text-white text-sm font-medium hover:bg-rose-400"
+                  >
+                    Try Full Year
+                  </button>
+                  <button 
+                    onClick={() => { setDataset("2024"); setMonth(null); setLoadError(null); }} 
+                    className="px-4 py-2 rounded border border-rose-500 text-rose-300 text-sm hover:bg-rose-500/20"
+                  >
+                    Switch to 2024
+                  </button>
+                  <button 
+                    onClick={() => window.location.reload()} 
+                    className="px-4 py-2 rounded border border-zinc-700 text-zinc-300 text-sm hover:bg-zinc-800"
+                  >
+                    Reload Page
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="mt-4 text-xs text-zinc-500 text-center">
+            Check browser console (F12) for detailed error logs
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!bars) {
     return (
@@ -138,9 +234,17 @@ export default function App() {
           <div className="flex flex-col gap-2">
             <div className="flex gap-1 rounded-md border border-zinc-800 p-0.5 bg-zinc-900">
               {DATASETS.map((d) => (
-                <button key={d.key} onClick={() => setDataset(d.key)} className={"px-3 py-1.5 rounded text-sm font-medium " + (dataset === d.key ? "bg-amber-500 text-zinc-950" : "text-zinc-400 hover:text-zinc-200")}>{d.label}</button>
+                <button key={d.key} onClick={() => { setDataset(d.key); setMonth(null); }} className={"px-3 py-1.5 rounded text-sm font-medium " + (dataset === d.key ? "bg-amber-500 text-zinc-950" : "text-zinc-400 hover:text-zinc-200")}>{d.label}</button>
               ))}
             </div>
+            {DATASETS.find((d) => d.key === dataset)?.hasMonths && (
+              <div className="flex gap-1 rounded-md border border-zinc-800 p-0.5 bg-zinc-900 flex-wrap">
+                <button onClick={() => setMonth(null)} className={"px-2 py-1 rounded text-xs font-medium " + (!month ? "bg-emerald-500 text-zinc-950" : "text-zinc-400 hover:text-zinc-200")}>Full Year</button>
+                {MONTHS.map((m) => (
+                  <button key={m.key} onClick={() => setMonth(m.key)} className={"px-2 py-1 rounded text-xs font-medium " + (month === m.key ? "bg-emerald-500 text-zinc-950" : "text-zinc-400 hover:text-zinc-200")}>{m.label}</button>
+                ))}
+              </div>
+            )}
             <div className="flex gap-1 rounded-md border border-zinc-800 p-0.5 bg-zinc-900">
               {TFS.map((t) => (
                 <button key={t.key} onClick={() => setTf(t.key)} className={"px-3 py-1.5 rounded text-sm font-medium " + (tf === t.key ? "bg-amber-500 text-zinc-950" : "text-zinc-400 hover:text-zinc-200")}>{t.label}</button>
