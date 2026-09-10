@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Data Loading</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #111;
+            color: #0f0;
+        }
+        .test { margin: 10px 0; padding: 10px; border: 1px solid #333; }
+        .success { border-color: #0f0; }
+        .error { border-color: #f00; color: #f00; }
+        button { 
+            padding: 10px 20px; 
+            margin: 5px; 
+            background: #333; 
+            color: #0f0; 
+            border: 1px solid #0f0; 
+            cursor: pointer;
+        }
+        button:hover { background: #0f0; color: #111; }
+    </style>
+</head>
+<body>
+    <h1>Gold Terminal - Data Loading Test</h1>
+    
+    <div>
+        <h2>Test Data Paths</h2>
+        <button onclick="testPath('/data/2025/m1.json', '2025 Full Year')">Test 2025 Full Year</button>
+        <button onclick="testPath('/data/2025/jan/m1.json', '2025 January')">Test 2025 Jan</button>
+        <button onclick="testPath('/data/2025/oct/m1.json', '2025 October')">Test 2025 Oct</button>
+        <button onclick="testPath('/data/2024/m1.json', '2024 Full Year')">Test 2024 Full Year</button>
+        <button onclick="testPath('/data/2024/jan/m1.json', '2024 January')">Test 2024 Jan</button>
+        <button onclick="clearTests()">Clear Results</button>
+    </div>
+
+    <div id="results"></div>
+
+    <script>
+        function clearTests() {
+            document.getElementById('results').innerHTML = '';
+        }
+
+        async function testPath(path, label) {
+            const resultsDiv = document.getElementById('results');
+            const testDiv = document.createElement('div');
+            testDiv.className = 'test';
+            testDiv.innerHTML = `<strong>${label}</strong><br>Path: ${path}<br>Loading...`;
+            resultsDiv.appendChild(testDiv);
+
+            try {
+                const response = await fetch(path);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                const key = path.includes('/m1.json') ? 'm1' : null;
+                
+                if (!data || !data[key]) {
+                    throw new Error('Invalid data structure - missing key: ' + key);
+                }
+
+                const bars = data[key];
+                const barCount = bars.length;
+                const firstBar = bars[0];
+                const lastBar = bars[bars.length - 1];
+
+                testDiv.className = 'test success';
+                testDiv.innerHTML = `
+                    <strong>✓ ${label}</strong><br>
+                    Path: ${path}<br>
+                    Bars: <strong>${barCount.toLocaleString()}</strong><br>
+                    First: ${firstBar[0]} (${firstBar[4]})<br>
+                    Last: ${lastBar[0]} (${lastBar[4]})<br>
+                    Status: SUCCESS
+                `;
+            } catch (error) {
+                testDiv.className = 'test error';
+                testDiv.innerHTML = `
+                    <strong>✗ ${label}</strong><br>
+                    Path: ${path}<br>
+                    Error: ${error.message}<br>
+                    Status: FAILED
+                `;
+            }
+        }
+
+        // Auto-run tests on load
+        window.addEventListener('DOMContentLoaded', () => {
+            console.log('Data Loading Test Page Ready');
+            console.log('Click buttons to test different data paths');
+        });
+    </script>
+</body>
+</html>
